@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { HOTELS_MASTER } from '@/data/hotels';
 
@@ -94,14 +94,15 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [isEditingTarget, setIsEditingTarget] = useState(false);
   const [tempTargetStock, setTempTargetStock] = useState(10);
+  const [lastUpdated, setLastUpdated] = useState<string>('');
 
   // ポップアップ用ステート
   const [targetOrder, setTargetOrder] = useState<Order | null>(null);
   const [nextStatus, setNextStatus] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string>('');
 
-  const fetchData = async () => {
-    setLoading(true);
+  // データ取得関数
+  const fetchData = useCallback(async () => {
     const today = new Date().toISOString().split('T')[0];
 
     const { data: orderData } = await supabase
@@ -133,12 +134,14 @@ export default function AdminDashboard() {
       setTempTargetStock(invData.target_stock);
     }
 
+    setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     setLoading(false);
-  };
+  }, []);
 
   useEffect(() => {
     fetchData();
 
+    // 1. Supabase Realtime 監視
     const ordersChannel = supabase
       .channel('admin_orders')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
@@ -153,11 +156,24 @@ export default function AdminDashboard() {
       })
       .subscribe();
 
+    // 2. 30秒ごとの自動ポーリング
+    const timer = setInterval(() => {
+      fetchData();
+    }, 30000);
+
+    // 3. 画面に復帰した時の即時更新
+    const handleFocus = () => {
+      fetchData();
+    };
+    window.addEventListener('focus', handleFocus);
+
     return () => {
       supabase.removeChannel(ordersChannel);
       supabase.removeChannel(invChannel);
+      clearInterval(timer);
+      window.removeEventListener('focus', handleFocus);
     };
-  }, []);
+  }, [fetchData]);
 
   const openStatusModal = (order: Order, status: string) => {
     setTargetOrder(order);
@@ -185,7 +201,6 @@ export default function AdminDashboard() {
     setTimeout(() => setToastMessage(''), 3500);
   };
 
-  // 店頭で1箱販売（総現物在庫が1減り、販売累計が1増える）
   const handleSellOne = async () => {
     if (!inventory || inventory.current_stock <= 0) return;
     const nextCurrent = inventory.current_stock - 1;
@@ -199,7 +214,6 @@ export default function AdminDashboard() {
       .eq('id', inventory.id);
   };
 
-  // 店舗内総在庫の手動調整（+ / -）
   const handleAdjustStock = async (delta: number) => {
     if (!inventory) return;
     const nextCurrent = Math.max(0, inventory.current_stock + delta);
@@ -224,7 +238,6 @@ export default function AdminDashboard() {
       .eq('id', inventory.id);
   };
 
-  // スロット集計
   const slotStats = DELIVERY_SLOTS.map((slot) => {
     const slotOrders = orders.filter((o) => (o.delivery_time || o.delivery_slot) === slot && o.status !== 'cancelled');
     const count = slotOrders.length;
@@ -235,27 +248,19 @@ export default function AdminDashboard() {
   const activeOrders = orders.filter((o) => o.status !== 'cancelled');
   const totalDeliveryBoxes = activeOrders.reduce((sum, o) => sum + (o.quantity || 1), 0);
 
-  // 1. デリバリー待機（キープ分）
   const deliveryStoreBoxes = orders
     .filter((o) => o.status === 'ready_store')
     .reduce((sum, o) => sum + (o.quantity || 1), 0);
 
-  // 2. 店舗内の総現物在庫（棚にある実際の総数）
   const totalStoreStock = inventory?.current_stock || 0;
-
-  // 3. 店頭フリー販売可能数 = 総現物在庫 - デリバリーキープ分
   const takeoutFreeStock = Math.max(0, totalStoreStock - deliveryStoreBoxes);
-
-  // 4. 店頭補充の必要数（店頭目標キープ数 - 店頭フリー在庫）
   const targetStock = inventory?.target_stock || 10;
   const storeShortage = Math.max(0, targetStock - takeoutFreeStock);
 
-  // 5. デリバリー未製造分（まだキッチンが作っていない pending 分）
   const pendingDeliveryBoxes = orders
     .filter((o) => !o.status || o.status === 'pending')
     .reduce((sum, o) => sum + (o.quantity || 1), 0);
 
-  // キッチンがこれから作るべき総数
   const totalSuggestBoxes = pendingDeliveryBoxes + storeShortage;
 
   return (
@@ -268,7 +273,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* ステータス変更確認ポップアップ（モーダル） */}
+      {/* ステータス変更確認ポップアップ */}
       {targetOrder && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl border border-stone-200 space-y-4">
@@ -323,17 +328,30 @@ export default function AdminDashboard() {
       <div className="max-w-6xl mx-auto space-y-6">
         
         {/* ヘッダー */}
-        <div className="flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-6 rounded-2xl shadow-sm border border-stone-200 gap-4">
           <div>
             <h1 className="text-2xl font-bold tracking-wide text-stone-900">ASAKUSA ONIGIRI 管理システム</h1>
             <p className="text-xs text-stone-500 mt-1">リアルタイム受注 ＆ 店頭在庫オペレーション</p>
           </div>
-          <button
-            onClick={fetchData}
-            className="px-4 py-2 bg-stone-900 text-white rounded-xl text-xs font-medium hover:bg-stone-800 transition"
-          >
-            最新情報に更新
-          </button>
+
+          <div className="flex items-center gap-3">
+            {/* LIVEインジケーター */}
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-stone-50 rounded-xl border border-stone-200 text-xs">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+              </span>
+              <span className="font-bold text-emerald-700">LIVE</span>
+              <span className="text-stone-400 text-[10px]">({lastUpdated || '同期中'})</span>
+            </div>
+
+            <button
+              onClick={fetchData}
+              className="px-3.5 py-1.5 bg-stone-900 text-white rounded-xl text-xs font-medium hover:bg-stone-800 transition"
+            >
+              今すぐ更新
+            </button>
+          </div>
         </div>
 
         {/* 上段：キッチン製造サジェスト ＆ 全体サマリー */}
