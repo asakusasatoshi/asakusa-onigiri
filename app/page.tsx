@@ -1,57 +1,51 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
-import { HOTELS_MASTER } from '@/data/hotels';
+import { HOTELS_MASTER, Hotel } from '@/data/hotels';
 
-interface Order {
-  id: number;
-  created_at: string;
-  hotel_name?: string;
-  hotel?: string;
-  hotel_id?: string;
-  room_number?: string;
-  room?: string;
-  guest_name?: string;
-  name?: string;
-  contact_email?: string;
-  email?: string;
-  delivery_time?: string;
-  delivery_slot?: string;
-  slot?: string;
-  quantity?: number;
-  qty?: number;
-  total_price?: number;
-  price?: number;
-  status: string;
+function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371e3;
+  const phi1 = (lat1 * Math.PI) / 180;
+  const phi2 = (lat2 * Math.PI) / 180;
+  const deltaPhi = ((lat2 - lat1) * Math.PI) / 180;
+  const deltaLambda = ((lon2 - lon1) * Math.PI) / 180;
+
+  const a =
+    Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
+    Math.cos(phi1) * Math.cos(phi2) * Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return Math.round(R * c);
 }
 
-interface StoreInventory {
-  id?: number;
-  target_date: string;
-  target_stock: number;
-  current_stock: number;
-  sold_count: number;
-}
+const TIME_SLOTS = ['07:00', '08:00', '09:00', '10:00'];
 
-export default function AdminDashboard() {
-  const [activeTab, setActiveTab] = useState<'operations' | 'settings'>('operations');
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [inventory, setInventory] = useState<StoreInventory>({
-    target_date: new Date().toISOString().split('T')[0],
-    target_stock: 10,
-    current_stock: 10,
-    sold_count: 0,
-  });
-  const [isLoading, setIsLoading] = useState(true);
-  const [lastUpdated, setLastUpdated] = useState<string>('');
+export default function OrderPage() {
+  const [selectedHotelId, setSelectedHotelId] = useState<string>('');
+  const [roomNumber, setRoomNumber] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [contactEmail, setContactEmail] = useState('');
+  const [deliverySlot, setDeliverySlot] = useState<string>('');
+  const [quantity, setQuantity] = useState(1);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSuccess, setIsSuccess] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
 
-  // === Settings State ===
+  // GPS & 位置情報
+  const [isLocating, setIsLocating] = useState(false);
+  const [gpsNote, setGpsNote] = useState<string>('');
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+
+  // Settings
   const [settings, setSettings] = useState({
     item_price: 1500,
     delivery_fee: 150,
     tax_amount: 150,
     delivery_radius_km: 2.5,
+    kitchen_lat: 35.7147,
+    kitchen_lng: 139.7967,
     is_open: true,
     limit_0700: 10,
     limit_0800: 15,
@@ -62,546 +56,636 @@ export default function AdminDashboard() {
     slot_0900_active: true,
     slot_1000_active: true,
   });
-  const [isSaving, setIsSaving] = useState(false);
-  const [saveMessage, setSaveMessage] = useState('');
 
-  const fetchAllData = useCallback(async () => {
-    // 1. Orders
-    const { data: orderData, error: orderErr } = await supabase
-      .from('orders')
-      .select('*')
-      .order('id', { ascending: false });
-    if (orderData && !orderErr) setOrders(orderData as Order[]);
+  const [slotBookedBoxes, setSlotBookedBoxes] = useState<Record<string, number>>({
+    '07:00': 0,
+    '08:00': 0,
+    '09:00': 0,
+    '10:00': 0,
+  });
 
-    // 2. Inventory
-    const today = new Date().toISOString().split('T')[0];
-    const { data: invData } = await supabase
-      .from('store_inventory')
-      .select('*')
-      .eq('target_date', today)
-      .maybeSingle();
-
-    if (invData) {
-      setInventory(invData);
-    } else {
-      const initInv = { target_date: today, target_stock: 10, current_stock: 10, sold_count: 0 };
-      const { data: createdInv } = await supabase.from('store_inventory').insert([initInv]).select().maybeSingle();
-      if (createdInv) setInventory(createdInv);
-    }
-
-    // 3. Settings
+  const fetchSettingsAndAvailability = useCallback(async () => {
+    // 1. Settings 取得
     const { data: setData } = await supabase
       .from('settings')
       .select('*')
       .eq('id', 'default_settings')
       .maybeSingle();
-    if (setData) setSettings(setData);
 
-    setLastUpdated(new Date().toLocaleTimeString('ja-JP'));
-    setIsLoading(false);
+    if (setData) {
+      setSettings(setData);
+    }
+
+    // 2. 有効注文の集計
+    const { data: orderData } = await supabase
+      .from('orders')
+      .select('delivery_time, quantity, status')
+      .not('status', 'in', '("cancelled","undelivered")');
+
+    const counts: Record<string, number> = {
+      '07:00': 0,
+      '08:00': 0,
+      '09:00': 0,
+      '10:00': 0,
+    };
+
+    if (orderData) {
+      orderData.forEach((o: any) => {
+        const slot = o.delivery_time || '08:00';
+        const q = o.quantity || 1;
+        if (counts[slot] !== undefined) {
+          counts[slot] += q;
+        }
+      });
+    }
+    setSlotBookedBoxes(counts);
   }, []);
 
   useEffect(() => {
-    fetchAllData();
-    const interval = setInterval(fetchAllData, 15000);
-    return () => clearInterval(interval);
-  }, [fetchAllData]);
+    fetchSettingsAndAvailability();
+  }, [fetchSettingsAndAvailability]);
 
-  // オペレーション集計
-  const activeOrders = useMemo(() => orders.filter((o) => o.status !== 'cancelled'), [orders]);
-  const activeDeliveryBoxes = useMemo(() => activeOrders.reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0), [activeOrders]);
-  const deliveryRevenue = useMemo(() => activeOrders.reduce((sum, o) => sum + (o.total_price || o.price || 0), 0), [activeOrders]);
+  // 各時間枠のステータス判定
+  const getSlotInfo = useCallback((slot: string) => {
+    const slotKey = slot.replace(':', '');
+    const isActive = Boolean(settings[`slot_${slotKey}_active` as keyof typeof settings]);
+    const maxLimit = Number(settings[`limit_${slotKey}` as keyof typeof settings]) || 10;
+    const currentBooked = slotBookedBoxes[slot] || 0;
+    const remaining = Math.max(0, maxLimit - currentBooked);
 
-  const slotStats = useMemo(() => {
-    const stats: Record<string, { boxes: number; orders: number }> = {
-      '07:00': { boxes: 0, orders: 0 },
-      '08:00': { boxes: 0, orders: 0 },
-      '09:00': { boxes: 0, orders: 0 },
-      '10:00': { boxes: 0, orders: 0 },
-    };
-    activeOrders.forEach((o) => {
-      const slot = o.delivery_time || o.delivery_slot || o.slot || '08:00';
-      if (!stats[slot]) stats[slot] = { boxes: 0, orders: 0 };
-      stats[slot].boxes += o.quantity || o.qty || 1;
-      stats[slot].orders += 1;
-    });
-    return stats;
-  }, [activeOrders]);
+    const isSoldOut = !isActive || remaining <= 0;
+    return { isSoldOut, remaining, isActive };
+  }, [settings, slotBookedBoxes]);
 
-  // 1. 店頭にすでに届いていて、デリバリー用に確保（取り置き）されている箱数 (ready_store)
-  const deliveryKeptBoxes = useMemo(() => {
-    return orders
-      .filter((o) => o.status === 'ready_store')
-      .reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0);
-  }, [orders]);
-
-  // 2. キッチン側でまだ製造が必要な箱数 (pending, confirmed, ready_kitchen, cooking)
-  const deliveryUncookedBoxes = useMemo(() => {
-    return orders
-      .filter((o) => o.status === 'pending' || o.status === 'confirmed' || o.status === 'ready_kitchen' || o.status === 'cooking')
-      .reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0);
-  }, [orders]);
-
-  // 3. 店頭販売可能数 = 店頭総現物 - 店頭デリバリー取り置き分
-  const takeoutAvailable = Math.max(0, inventory.current_stock - deliveryKeptBoxes);
-  
-  // 4. 店頭補充必要数
-  const storeRestockNeeded = Math.max(0, inventory.target_stock - takeoutAvailable);
-  
-  // 5. キッチン指示数 = デリバリー未製造 + 店頭補充必要数
-  const kitchenSuggestBoxes = deliveryUncookedBoxes + storeRestockNeeded;
-
-  // ステータス更新
-  const handleUpdateStatus = async (orderId: number, nextStatus: string) => {
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: nextStatus } : o));
-    const { error } = await supabase.from('orders').update({ status: nextStatus }).eq('id', orderId);
-    if (error) {
-      alert('ステータス更新に失敗しました: ' + error.message);
-      fetchAllData();
+  // 利用可能な最初の枠を自動選択
+  useEffect(() => {
+    const firstAvailable = TIME_SLOTS.find(slot => !getSlotInfo(slot).isSoldOut);
+    if (firstAvailable && (!deliverySlot || getSlotInfo(deliverySlot).isSoldOut)) {
+      setDeliverySlot(firstAvailable);
     }
-  };
+  }, [getSlotInfo, deliverySlot]);
 
-  const handleShelfChange = async (delta: number) => {
-    const newStock = Math.max(0, inventory.current_stock + delta);
-    setInventory((prev) => ({ ...prev, current_stock: newStock }));
-    await supabase.from('store_inventory').update({ current_stock: newStock }).eq('target_date', inventory.target_date);
-  };
+  // 配達可能ホテルリスト
+  const availableHotels = useMemo(() => {
+    const maxMeters = Number(settings.delivery_radius_km) * 1000;
+    return HOTELS_MASTER.filter((hotel) => {
+      if (!hotel.lat || !hotel.lng) return true;
+      const dist = calculateDistance(settings.kitchen_lat, settings.kitchen_lng, hotel.lat, hotel.lng);
+      return dist <= maxMeters;
+    });
+  }, [settings]);
 
-  const handleSellCounter = async () => {
-    if (takeoutAvailable <= 0) {
-      alert('店頭販売可能分がありません。現物を補充してください。');
+  const groupedHotels = useMemo(() => {
+    const groups: Record<string, Hotel[]> = {};
+    availableHotels.forEach((hotel) => {
+      if (!groups[hotel.area]) groups[hotel.area] = [];
+      groups[hotel.area].push(hotel);
+    });
+    Object.keys(groups).forEach((area) => {
+      groups[area].sort((a, b) => a.name.localeCompare(b.name));
+    });
+    return groups;
+  }, [availableHotels]);
+
+  // 料金計算
+  const itemSubtotal = quantity * settings.item_price;
+  const taxSubtotal = quantity * settings.tax_amount;
+  const grandTotal = itemSubtotal + settings.delivery_fee + taxSubtotal;
+
+  const selectedHotel = availableHotels.find((h) => String(h.id) === String(selectedHotelId));
+
+  // 英語マップHTML
+  const mapHtml = useMemo(() => {
+    const centerLat = selectedHotel ? selectedHotel.lat : (userLocation ? userLocation.lat : settings.kitchen_lat);
+    const centerLng = selectedHotel ? selectedHotel.lng : (userLocation ? userLocation.lng : settings.kitchen_lng);
+    const zoomLevel = selectedHotel ? 17 : 15;
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <style>
+          body, html, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #f5f5f4; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+          .user-pulse {
+            width: 14px; height: 14px; background: #2563eb; border-radius: 50%;
+            border: 2px solid #ffffff; box-shadow: 0 0 10px rgba(37,99,235,0.6);
+            animation: pulse 1.8s infinite;
+          }
+          @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.7); }
+            70% { box-shadow: 0 0 0 14px rgba(37, 99, 235, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); }
+          }
+        </style>
+      </head>
+      <body>
+        <div id="map"></div>
+        <script>
+          var map = L.map('map', { zoomControl: false }).setView([${centerLat}, ${centerLng}], ${zoomLevel});
+          L.tileLayer('https://mt1.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}', {
+            maxZoom: 20,
+            attribution: '&copy; Google Maps'
+          }).addTo(map);
+
+          var bounds = [];
+          ${userLocation ? `
+            var userIcon = L.divIcon({ className: 'user-pulse', iconSize: [14, 14], iconAnchor: [7, 7] });
+            L.marker([${userLocation.lat}, ${userLocation.lng}], { icon: userIcon })
+              .addTo(map)
+              .bindPopup("<b>📍 You are here</b>")
+              .openPopup();
+            bounds.push([${userLocation.lat}, ${userLocation.lng}]);
+          ` : ''}
+
+          ${selectedHotel ? `
+            var hotelMarker = L.marker([${selectedHotel.lat}, ${selectedHotel.lng}])
+              .addTo(map)
+              .bindPopup("<b>🏨 ${selectedHotel.name}</b><br><span style='font-size:11px; color:#555;'>${selectedHotel.addressEn || selectedHotel.address}</span>");
+            ${!userLocation ? 'hotelMarker.openPopup();' : ''}
+            bounds.push([${selectedHotel.lat}, ${selectedHotel.lng}]);
+          ` : ''}
+
+          if (bounds.length === 2) {
+            map.fitBounds(bounds, { padding: [35, 35], maxZoom: 17 });
+          }
+        </script>
+      </body>
+      </html>
+    `;
+  }, [selectedHotel, userLocation, settings]);
+
+  const handleDetectLocation = () => {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by your browser.');
       return;
     }
-    const newStock = Math.max(0, inventory.current_stock - 1);
-    const newSold = inventory.sold_count + 1;
-    setInventory((prev) => ({ ...prev, current_stock: newStock, sold_count: newSold }));
-    await supabase.from('store_inventory').update({ current_stock: newStock, sold_count: newSold }).eq('target_date', inventory.target_date);
+    setIsLocating(true);
+    setGpsNote('');
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const userLat = position.coords.latitude;
+        const userLng = position.coords.longitude;
+        setUserLocation({ lat: userLat, lng: userLng });
+
+        if (availableHotels.length === 0) {
+          setIsLocating(false);
+          alert('No hotels found in the delivery zone.');
+          return;
+        }
+
+        let closestHotel: Hotel = availableHotels[0];
+        let minDistance = Infinity;
+
+        availableHotels.forEach((hotel) => {
+          if (hotel.lat && hotel.lng) {
+            const dist = calculateDistance(userLat, userLng, hotel.lat, hotel.lng);
+            if (dist < minDistance) {
+              minDistance = dist;
+              closestHotel = hotel;
+            }
+          }
+        });
+
+        setSelectedHotelId(String(closestHotel.id));
+        setIsLocating(false);
+
+        if (minDistance < 300) {
+          setGpsNote(`📍 Auto-detected: Near ${closestHotel.name} (${minDistance}m)`);
+        } else {
+          setGpsNote(`📍 Nearest hotel in delivery zone: ${closestHotel.name} (${minDistance}m)`);
+        }
+      },
+      () => {
+        setIsLocating(false);
+        alert('Could not access your location. Please select your hotel manually.');
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
   };
 
-  // 設定保存
-  const handleSaveSettings = async () => {
-    setIsSaving(true);
-    setSaveMessage('');
-    const { error } = await supabase
-      .from('settings')
-      .update({
-        item_price: settings.item_price,
-        delivery_fee: settings.delivery_fee,
-        tax_amount: settings.tax_amount,
-        delivery_radius_km: settings.delivery_radius_km,
-        is_open: settings.is_open,
-        limit_0700: settings.limit_0700,
-        limit_0800: settings.limit_0800,
-        limit_0900: settings.limit_0900,
-        limit_1000: settings.limit_1000,
-        slot_0700_active: settings.slot_0700_active,
-        slot_0800_active: settings.slot_0800_active,
-        slot_0900_active: settings.slot_0900_active,
-        slot_1000_active: settings.slot_1000_active,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', 'default_settings');
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedHotelId) {
+      setErrorMessage('Please select your hotel / お届け先ホテルを選択してください。');
+      return;
+    }
+    if (!roomNumber.trim()) {
+      setErrorMessage('Please enter your room number / 部屋番号を入力してください。');
+      return;
+    }
+    if (!firstName.trim() || !lastName.trim()) {
+      setErrorMessage('Please enter both First Name and Last Name / お名前を入力してください。');
+      return;
+    }
+    if (!contactEmail.trim()) {
+      setErrorMessage('Please enter your email / メールアドレスを入力してください。');
+      return;
+    }
 
-    setIsSaving(false);
-    if (error) {
-      setSaveMessage('❌ Error saving settings: ' + error.message);
-    } else {
-      setSaveMessage('✓ Settings saved successfully!');
-      setTimeout(() => setSaveMessage(''), 3000);
+    const currentSlotInfo = getSlotInfo(deliverySlot);
+    if (!deliverySlot || currentSlotInfo.isSoldOut) {
+      setErrorMessage(`The ${deliverySlot} slot is currently Sold Out. Please choose another delivery time / 選択された配達枠は完売いたしました。`);
+      return;
+    }
+
+    setIsSubmitting(true);
+    setErrorMessage('');
+
+    const fullName = `${firstName.trim()} ${lastName.trim()}`;
+
+    try {
+      const orderPayload = {
+        hotel_name: selectedHotel?.nameJa || selectedHotel?.name,
+        room_number: roomNumber,
+        guest_name: fullName,
+        contact_email: contactEmail,
+        delivery_time: deliverySlot,
+        quantity: quantity,
+        total_price: grandTotal,
+        status: 'order_received',
+      };
+
+      const { error } = await supabase.from('orders').insert([orderPayload]);
+
+      if (error) throw error;
+      setIsSuccess(true);
+      fetchSettingsAndAvailability();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to place order. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const handleSettingChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value, type, checked } = e.target;
-    setSettings((prev) => ({
-      ...prev,
-      [name]: type === 'checkbox' ? checked : Number(value),
-    }));
-  };
-
-  // ホテル名の解決ヘルパー
-  const getHotelDisplayName = (order: Order) => {
-    const raw = order.hotel_name || order.hotel || order.hotel_id || '';
-    const found = HOTELS_MASTER.find((h) => String(h.id) === String(raw) || h.name === raw || h.nameJa === raw);
-    if (found) {
-      return `${found.nameJa || found.name}`;
-    }
-    return raw || 'Hotel Unspecified';
-  };
-
-  if (isLoading) {
-    return <div className="min-h-screen flex items-center justify-center bg-[#f5f5f4] text-stone-500 font-medium">Loading Operations Data...</div>;
-  }
-
-  return (
-    <div className="min-h-screen bg-[#f5f5f4] text-stone-800 font-sans pb-20">
-      
-      {/* 上部ヘッダー ＆ タブバー */}
-      <div className="bg-white border-b border-stone-200 sticky top-0 z-50 shadow-sm">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3.5 flex flex-col sm:flex-row justify-between items-center gap-4">
-          <div className="flex items-center gap-3">
-            <h1 className="text-lg font-bold tracking-tight text-stone-900">ASAKUSA ONIGIRI</h1>
-            <span className="text-[10px] px-2 py-0.5 bg-stone-100 text-stone-600 rounded border border-stone-200 font-semibold uppercase">
-              Admin Console
-            </span>
+  // 全体受付停止時
+  if (!settings.is_open) {
+    return (
+      <div className="min-h-screen bg-[#faf8f5] text-stone-800 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white border border-stone-200 rounded-3xl p-8 text-center space-y-5 shadow-sm">
+          <div className="w-14 h-14 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center mx-auto text-2xl font-bold border border-rose-200">
+            ✕
           </div>
-
-          <div className="flex items-center gap-3">
-            <div className="flex bg-stone-100 p-1 rounded-xl border border-stone-200">
-              <button
-                onClick={() => setActiveTab('operations')}
-                className={`px-5 py-2 rounded-lg text-xs font-bold transition ${
-                  activeTab === 'operations'
-                    ? 'bg-white text-stone-900 shadow-sm border border-stone-200'
-                    : 'text-stone-500 hover:text-stone-800'
-                }`}
-              >
-                📦 Operations (現場管理)
-              </button>
-              <button
-                onClick={() => setActiveTab('settings')}
-                className={`px-5 py-2 rounded-lg text-xs font-bold transition ${
-                  activeTab === 'settings'
-                    ? 'bg-white text-stone-900 shadow-sm border border-stone-200'
-                    : 'text-stone-500 hover:text-stone-800'
-                }`}
-              >
-                ⚙️ Settings (設定)
-              </button>
-            </div>
-
-            <button
-              onClick={fetchAllData}
-              className="text-xs bg-white hover:bg-stone-50 text-stone-700 px-3 py-2 rounded-xl border border-stone-300 font-semibold flex items-center gap-1 transition shadow-2xs"
-            >
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              Refresh ({lastUpdated})
-            </button>
+          <div className="space-y-2">
+            <h1 className="text-2xl font-bold tracking-tight text-stone-900">Today's Orders Closed</h1>
+            <p className="text-xs text-stone-600 leading-relaxed">
+              Today's breakfast orders are fully booked or closed. Thank you for your interest!
+            </p>
+            <p className="text-[11px] text-stone-400">本日分の朝食受付は終了いたしました。</p>
           </div>
         </div>
       </div>
+    );
+  }
 
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
-        
-        {/* =========================================
-            1. OPERATIONS TAB (現場オペレーション画面)
-            ========================================= */}
-        {activeTab === 'operations' && (
-          <div className="space-y-6">
-            
-            {/* 上段3カラムサマリー */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              
-              {/* キッチン製造指示 */}
-              <div className="bg-stone-900 text-white p-5 rounded-2xl shadow-sm space-y-3">
-                <span className="text-[10px] uppercase tracking-wider text-stone-400 font-bold block">
-                  KITCHEN SUGGEST / 製造指示
-                </span>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-4xl font-extrabold text-white">{kitchenSuggestBoxes}</span>
-                  <span className="text-xs text-stone-300">boxes to prepare / 箱</span>
-                </div>
-                <div className="pt-3 border-t border-stone-800 space-y-1 text-[11px] text-stone-300">
-                  <div className="flex justify-between">
-                    <span>Delivery (Uncooked) / デリバリー未製造:</span>
-                    <span className="font-bold text-amber-400">{deliveryUncookedBoxes} boxes</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Store Restock / 店頭補充必要数:</span>
-                    <span className="font-bold text-emerald-400">{storeRestockNeeded} boxes</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* デリバリー有効受注 */}
-              <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
-                <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold block">
-                  ACTIVE DELIVERY ORDERS / デリバリー有効受注
-                </span>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-3xl font-extrabold text-stone-900">{activeOrders.length}</span>
-                  <span className="text-xs text-stone-500">orders ({activeDeliveryBoxes} boxes)</span>
-                </div>
-                <div className="pt-3 border-t border-stone-100 text-[11px] text-stone-600">
-                  Revenue: <span className="font-bold text-stone-900">¥{deliveryRevenue.toLocaleString()}</span>
-                </div>
-              </div>
-
-              {/* 店頭販売累計 */}
-              <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
-                <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold block">
-                  TAKEOUT SOLD (TODAY) / 店頭販売累計
-                </span>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-3xl font-extrabold text-stone-900">{inventory.sold_count}</span>
-                  <span className="text-xs text-stone-500">boxes sold / 消化</span>
-                </div>
-                <div className="pt-3 border-t border-stone-100 text-[11px] text-stone-600">
-                  Takeout Rev: <span className="font-bold text-stone-900">¥{(inventory.sold_count * (settings.item_price + settings.tax_amount)).toLocaleString()}</span>
-                </div>
-              </div>
-
-            </div>
-
-            {/* 中段：時間枠別状況 ＆ 店頭在庫POS */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              
-              {/* 配達枠別 状況 */}
-              <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
-                <span className="text-xs font-bold text-stone-700 uppercase tracking-wider block">
-                  DELIVERY BY TIME SLOT / 配達枠別 状況
-                </span>
-                <div className="grid grid-cols-4 gap-2">
-                  {['07:00', '08:00', '09:00', '10:00'].map((slot) => (
-                    <div key={slot} className="bg-stone-50 p-3 rounded-xl border border-stone-200 text-center">
-                      <span className="text-[11px] font-bold text-stone-600 block">{slot}</span>
-                      <div className="text-xl font-extrabold text-stone-900 my-1">{slotStats[slot]?.boxes || 0} <span className="text-[10px] font-normal text-stone-500">box</span></div>
-                      <span className="text-[10px] text-stone-400 block">{slotStats[slot]?.orders || 0} orders</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* 店頭在庫 & POS */}
-              <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-xs font-bold text-stone-700 uppercase tracking-wider">
-                    STORE INVENTORY & POS / 店頭在庫
-                  </span>
-                  <span className="text-[11px] text-stone-500">
-                    Target: {inventory.target_stock} boxes
-                  </span>
-                </div>
-
-                <div className="flex items-baseline justify-between bg-stone-50 p-3.5 rounded-xl border border-stone-200">
-                  <span className="text-xs font-bold text-stone-600">TOTAL PHYSICAL SHELF / 店頭総現物</span>
-                  <span className="text-2xl font-extrabold text-stone-900">{inventory.current_stock} <span className="text-xs font-normal text-stone-500">boxes</span></span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3 text-xs">
-                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
-                    <span className="text-[10px] text-emerald-800 font-bold block">Takeout Free / 店頭販売可</span>
-                    <span className="text-lg font-bold text-emerald-900">{takeoutAvailable} boxes</span>
-                  </div>
-                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl">
-                    <span className="text-[10px] text-blue-800 font-bold block">Delivery Kept / 配送待機</span>
-                    <span className="text-lg font-bold text-blue-900">{deliveryKeptBoxes} boxes</span>
-                  </div>
-                </div>
-
-                <div className="flex justify-between items-center pt-2">
-                  <span className="text-xs text-stone-500 font-medium">Shelf Adjust / 総現物調整:</span>
-                  <div className="flex gap-2">
-                    <button onClick={() => handleShelfChange(-1)} className="w-8 h-8 bg-stone-100 border border-stone-300 rounded-lg font-bold hover:bg-stone-200">-</button>
-                    <button onClick={() => handleShelfChange(1)} className="w-8 h-8 bg-stone-100 border border-stone-300 rounded-lg font-bold hover:bg-stone-200">+</button>
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleSellCounter}
-                  className="w-full py-3 bg-emerald-700 hover:bg-emerald-800 active:scale-[0.99] text-white rounded-xl text-xs font-bold transition shadow-sm"
-                >
-                  Sell 1 Box at Counter / 店頭で1箱販売
-                </button>
-              </div>
-
-            </div>
-
-            {/* 下段：デリバリー受注一覧テーブル */}
-            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
-              <span className="text-xs font-bold text-stone-700 uppercase tracking-wider block">
-                DELIVERY ORDERS LIST / デリバリー受注一覧
-              </span>
-
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs text-stone-700 border-collapse">
-                  <thead>
-                    <tr className="border-b border-stone-200 text-stone-400 uppercase text-[10px]">
-                      <th className="py-2.5 px-3">ID</th>
-                      <th className="py-2.5 px-3">Status</th>
-                      <th className="py-2.5 px-3">Slot</th>
-                      <th className="py-2.5 px-3">Hotel / お届け先</th>
-                      <th className="py-2.5 px-3">Room</th>
-                      <th className="py-2.5 px-3">Guest / お名前</th>
-                      <th className="py-2.5 px-3 text-right">Qty</th>
-                      <th className="py-2.5 px-3 text-right">Total</th>
-                      <th className="py-2.5 px-3 text-center">Action / ステータス変更</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-stone-100">
-                    {orders.map((o) => {
-                      const displayHotel = getHotelDisplayName(o);
-                      const displaySlot = o.delivery_time || o.delivery_slot || o.slot || '08:00';
-                      const displayRoom = o.room_number || o.room || '-';
-                      const displayGuest = o.guest_name || o.name || '-';
-                      const displayEmail = o.contact_email || o.email || '';
-                      const displayQty = o.quantity || o.qty || 1;
-                      const displayTotal = o.total_price || o.price || (displayQty * 1800);
-
-                      return (
-                        <tr key={o.id} className="hover:bg-stone-50 transition">
-                          <td className="py-3 px-3 font-mono font-bold text-stone-400 text-[11px]">#{o.id}</td>
-                          <td className="py-3 px-3">
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                              o.status === 'delivered' ? 'bg-emerald-100 text-emerald-800' :
-                              o.status === 'ready_store' ? 'bg-blue-100 text-blue-800' :
-                              o.status === 'ready_kitchen' || o.status === 'cooking' ? 'bg-amber-100 text-amber-800' :
-                              o.status === 'cancelled' ? 'bg-stone-200 text-stone-500' : 'bg-stone-100 text-stone-700'
-                            }`}>
-                              {o.status}
-                            </span>
-                          </td>
-                          <td className="py-3 px-3 font-bold text-stone-900">{displaySlot}</td>
-                          <td className="py-3 px-3 font-semibold text-stone-800">{displayHotel}</td>
-                          <td className="py-3 px-3 font-mono text-stone-900 font-bold">{displayRoom}</td>
-                          <td className="py-3 px-3">
-                            <div className="font-semibold text-stone-900">{displayGuest}</div>
-                            {displayEmail && <div className="text-[10px] text-stone-400">{displayEmail}</div>}
-                          </td>
-                          <td className="py-3 px-3 text-right font-bold">{displayQty}</td>
-                          <td className="py-3 px-3 text-right font-bold text-stone-900">¥{displayTotal.toLocaleString()}</td>
-                          <td className="py-3 px-3 text-center">
-                            <select
-                              value={o.status}
-                              onChange={(e) => handleUpdateStatus(o.id, e.target.value)}
-                              className="bg-stone-50 border border-stone-300 rounded-lg px-2 py-1 text-[11px] font-semibold text-stone-800 outline-none focus:border-stone-900"
-                            >
-                              <option value="pending">pending (受注)</option>
-                              <option value="ready_kitchen">ready_kitchen (調理指示)</option>
-                              <option value="ready_store">ready_store (店舗待機)</option>
-                              <option value="cooking">cooking (調理中)</option>
-                              <option value="delivering">delivering (配達中)</option>
-                              <option value="delivered">delivered (配達完了)</option>
-                              <option value="cancelled">cancelled (取消)</option>
-                            </select>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
+  // 注文完了画面
+  if (isSuccess) {
+    return (
+      <div className="min-h-screen bg-[#faf8f5] text-stone-800 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white border border-stone-200 rounded-3xl p-8 text-center space-y-6 shadow-sm">
+          <div className="w-14 h-14 bg-emerald-50 text-emerald-700 rounded-full flex items-center justify-center mx-auto text-2xl font-bold border border-emerald-200">
+            ✓
           </div>
-        )}
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-stone-900">Order Confirmed</h1>
+            <p className="text-xs text-stone-500 mt-1">ご注文を承りました</p>
+          </div>
 
-        {/* =========================================
-            2. SETTINGS TAB (設定コントロールパネル)
-            ========================================= */}
-        {activeTab === 'settings' && (
-          <div className="max-w-3xl mx-auto space-y-6">
-            
-            <div className="flex justify-between items-center">
-              <h2 className="text-xl font-bold text-stone-900">Store Settings & Limits</h2>
-              <button
-                onClick={handleSaveSettings}
-                disabled={isSaving}
-                className="bg-stone-900 hover:bg-stone-800 text-white px-6 py-2.5 rounded-xl text-xs font-bold shadow-sm transition active:scale-95 disabled:bg-stone-400"
-              >
-                {isSaving ? 'Saving...' : 'Save All Settings'}
-              </button>
+          <div className="bg-stone-50 p-5 rounded-2xl border border-stone-200 text-left text-xs space-y-3">
+            <div className="flex justify-between">
+              <span className="text-stone-500">Guest / ご宿泊者:</span>
+              <span className="font-semibold text-stone-900">{firstName} {lastName}</span>
             </div>
-            
-            {saveMessage && (
-              <div className={`p-3 rounded-xl text-xs font-bold text-center ${saveMessage.includes('Error') ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-800'}`}>
-                {saveMessage}
+            <div className="flex justify-between">
+              <span className="text-stone-500">Hotel / お届け先:</span>
+              <span className="font-semibold text-stone-900">{selectedHotel?.nameJa || selectedHotel?.name}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-stone-500">Room / 部屋番号:</span>
+              <span className="font-semibold text-stone-900">{roomNumber}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-stone-500">Delivery Time / 配達枠:</span>
+              <span className="font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                {deliverySlot}
+              </span>
+            </div>
+
+            <div className="pt-3 border-t border-stone-200 space-y-1.5 text-[11px]">
+              <div className="flex justify-between text-stone-600">
+                <span>Bento Box (¥{settings.item_price.toLocaleString()} × {quantity}):</span>
+                <span>¥{itemSubtotal.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-stone-600">
+                <span>Room Delivery Fee (客室配達料):</span>
+                <span>¥{settings.delivery_fee.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-stone-600">
+                <span>Tax (諸税 / ¥{settings.tax_amount.toLocaleString()} × {quantity}):</span>
+                <span>¥{taxSubtotal.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between pt-2 border-t border-stone-200 font-bold text-sm text-stone-900">
+                <span>Total Amount / 合計:</span>
+                <span>¥{grandTotal.toLocaleString()}</span>
+              </div>
+            </div>
+          </div>
+
+          <p className="text-[11px] text-stone-500 leading-relaxed">
+            Freshly prepared breakfast will be delivered directly to your room or front desk at {deliverySlot}.
+          </p>
+
+          <button
+            onClick={() => {
+              setIsSuccess(false);
+              setRoomNumber('');
+              setFirstName('');
+              setLastName('');
+            }}
+            className="w-full py-3 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-semibold transition border border-stone-200 cursor-pointer"
+          >
+            Place Another Order / 別の注文をする
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#faf8f5] text-stone-800 py-12 px-4 flex justify-center">
+      <div className="max-w-lg w-full space-y-8">
+        
+        {/* ヘッダー */}
+        <div className="text-center space-y-2">
+          <span className="text-[10px] tracking-widest uppercase px-3 py-1 bg-stone-100 text-stone-600 border border-stone-300 rounded-full font-medium">
+            Authentic Japanese Morning
+          </span>
+          <h1 className="text-3xl font-bold tracking-tight text-stone-900">ASAKUSA ONIGIRI</h1>
+          <p className="text-xs text-stone-500 max-w-sm mx-auto leading-relaxed">
+            Traditional bamboo-leaf wrapped breakfast delivered fresh to your Asakusa hotel room.
+          </p>
+        </div>
+
+        {/* 注文フォーム */}
+        <form onSubmit={handleSubmit} className="bg-white border border-stone-200 rounded-3xl p-6 sm:p-8 space-y-6 shadow-sm">
+          
+          {/* 1. お届け先ホテル */}
+          <div className="space-y-3">
+            <label className="text-xs font-bold tracking-wider text-stone-700 uppercase block">
+              1. Delivery Location / お届け先ホテル
+            </label>
+
+            <button
+              type="button"
+              onClick={handleDetectLocation}
+              disabled={isLocating}
+              className="w-full py-3.5 bg-stone-900 hover:bg-stone-800 active:scale-[0.99] disabled:bg-stone-300 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition shadow-sm cursor-pointer"
+            >
+              <span>📍</span>
+              <span>{isLocating ? 'Detecting your hotel location...' : 'Auto-Detect My Hotel (GPS) / 現在地から自動検出'}</span>
+            </button>
+
+            {gpsNote && (
+              <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] text-emerald-800 font-medium">
+                {gpsNote}
               </div>
             )}
 
-            {/* 1. 全体営業ステータス */}
-            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
-              <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">
-                1. Store Master Status (店舗全体ステータス)
-              </h3>
-              <div className="flex items-center justify-between p-3.5 bg-stone-50 rounded-xl border border-stone-200">
-                <div>
-                  <div className="text-xs font-bold text-stone-900">Accept New Orders (新規受付ON/OFF)</div>
-                  <div className="text-[11px] text-stone-500 mt-0.5">OFFにすると全時間帯が一括で受付終了となり、お客さんの注文を停止します。</div>
+            <div className="rounded-2xl overflow-hidden border border-stone-200 bg-stone-100 relative shadow-inner">
+              <iframe
+                title="Interactive Hotel Map"
+                srcDoc={mapHtml}
+                className="w-full h-44 border-0"
+              />
+              <div className="bg-white/95 backdrop-blur-sm px-3.5 py-2 border-t border-stone-200 text-[11px] flex justify-between items-center text-stone-700">
+                <div className="flex items-center gap-2 truncate">
+                  {userLocation && (
+                    <span className="flex items-center gap-1 text-blue-700 font-semibold shrink-0">
+                      <span className="w-2 h-2 rounded-full bg-blue-600"></span> You
+                    </span>
+                  )}
+                  <span className="font-medium truncate">
+                    {selectedHotel ? `🏨 ${selectedHotel.name}` : `📍 Within ${settings.delivery_radius_km}km Delivery Zone`}
+                  </span>
                 </div>
-                <label className="relative inline-flex items-center cursor-pointer shrink-0">
-                  <input type="checkbox" name="is_open" checked={settings.is_open} onChange={handleSettingChange} className="sr-only peer" />
-                  <div className="w-11 h-6 bg-stone-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-stone-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-                </label>
+                {selectedHotel && (
+                  <span className="text-[10px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 shrink-0 ml-2">
+                    {selectedHotel.area}
+                  </span>
+                )}
               </div>
             </div>
 
-            {/* 2. 料金設定 */}
-            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
-              <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">
-                2. Price & Taxes (料金設定)
-              </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Item Price (本体価格 /箱)</label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500 text-xs">¥</span>
-                    <input type="number" name="item_price" value={settings.item_price} onChange={handleSettingChange} className="w-full pl-7 pr-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-bold outline-none focus:border-stone-900" />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Delivery Fee (配達料 /注文)</label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500 text-xs">¥</span>
-                    <input type="number" name="delivery_fee" value={settings.delivery_fee} onChange={handleSettingChange} className="w-full pl-7 pr-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-bold outline-none focus:border-stone-900" />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Tax Amount (諸税 /箱)</label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500 text-xs">¥</span>
-                    <input type="number" name="tax_amount" value={settings.tax_amount} onChange={handleSettingChange} className="w-full pl-7 pr-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-bold outline-none focus:border-stone-900" />
-                  </div>
-                </div>
-              </div>
+            <div>
+              <span className="text-[11px] text-stone-500 block mb-1.5 font-medium">
+                Or select your hotel manually ({availableHotels.length} hotels in range):
+              </span>
+              <select
+                value={selectedHotelId}
+                onChange={(e) => {
+                  setSelectedHotelId(e.target.value);
+                  setGpsNote('');
+                }}
+                required
+                className="w-full bg-stone-50 border border-stone-300 rounded-xl px-4 py-3 text-xs text-stone-900 outline-none focus:border-stone-800 transition font-medium"
+              >
+                <option value="">-- Choose hotel from list (A-Z) / ホテル一覧 --</option>
+                {Object.entries(groupedHotels).map(([areaName, hotels]) => (
+                  <optgroup key={areaName} label={`--- ${areaName} ---`}>
+                    {hotels.map((hotel) => (
+                      <option key={hotel.id} value={hotel.id}>
+                        {hotel.name} ({hotel.nameJa})
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* 2. 部屋番号 */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-bold tracking-wider text-stone-700 uppercase">
+              2. Room Number / 部屋番号
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. 502"
+              value={roomNumber}
+              onChange={(e) => setRoomNumber(e.target.value)}
+              required
+              className="w-full bg-stone-50 border border-stone-300 rounded-xl px-4 py-3 text-xs text-stone-900 outline-none focus:border-stone-800 transition"
+            />
+          </div>
+
+          {/* 3 & 4. 宿泊者名 */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold tracking-wider text-stone-700 uppercase">
+                3. First Name / 名
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Satoshi"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                required
+                className="w-full bg-stone-50 border border-stone-300 rounded-xl px-4 py-3 text-xs text-stone-900 outline-none focus:border-stone-800 transition"
+              />
             </div>
 
-            {/* 3. 配達エリア設定 */}
-            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
-              <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">
-                3. Delivery Coverage (配達可能エリア)
-              </h3>
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <label className="text-[11px] font-bold text-stone-600">Delivery Radius (配達半径 km)</label>
-                  <span className="font-extrabold text-sm text-stone-900">{Number(settings.delivery_radius_km).toFixed(1)} km</span>
-                </div>
-                <input type="range" name="delivery_radius_km" min="1.0" max="5.0" step="0.1" value={settings.delivery_radius_km} onChange={handleSettingChange} className="w-full accent-stone-900" />
-                <p className="text-[10px] text-stone-400 mt-1">※半径を変更すると、フロント画面のホテル選択一覧が自動で絞り込まれます。</p>
-              </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold tracking-wider text-stone-700 uppercase">
+                4. Last Name / 姓
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Sanaka"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                required
+                className="w-full bg-stone-50 border border-stone-300 rounded-xl px-4 py-3 text-xs text-stone-900 outline-none focus:border-stone-800 transition"
+              />
+            </div>
+          </div>
+
+          {/* 5. メールアドレス */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-bold tracking-wider text-stone-700 uppercase">
+              5. Email Address / 連絡先メール
+            </label>
+            <input
+              type="email"
+              placeholder="e.g. guest@example.com"
+              value={contactEmail}
+              onChange={(e) => setContactEmail(e.target.value)}
+              required
+              className="w-full bg-stone-50 border border-stone-300 rounded-xl px-4 py-3 text-xs text-stone-900 outline-none focus:border-stone-800 transition"
+            />
+          </div>
+
+          {/* 6. 配達時間枠（SOLD OUT完全対応版） */}
+          <div className="space-y-2">
+            <div className="flex justify-between items-center">
+              <label className="text-xs font-bold tracking-wider text-stone-700 uppercase">
+                6. Delivery Time / 配達時間枠
+              </label>
+              <span className="text-[10px] text-stone-400">Select an available morning slot</span>
             </div>
 
-            {/* 4. 時間枠・上限設定 */}
-            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
-              <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">
-                4. Time Slot Capacity & Control (時間枠の受付上限 ＆ 強制停止)
-              </h3>
-              <p className="text-[10px] text-stone-400">スイッチをOFFにすると、上限に達していなくても即座に「SOLD OUT」にできます。</p>
-              
-              <div className="space-y-2.5">
-                {['0700', '0800', '0900', '1000'].map((slot) => (
-                  <div key={slot} className={`flex items-center justify-between p-3 rounded-xl border transition ${settings[`slot_${slot}_active` as keyof typeof settings] ? 'bg-stone-50 border-stone-200' : 'bg-rose-50/40 border-rose-200'}`}>
-                    <div className="flex items-center gap-3">
-                      <label className="relative inline-flex items-center cursor-pointer">
-                        <input type="checkbox" name={`slot_${slot}_active`} checked={Boolean(settings[`slot_${slot}_active` as keyof typeof settings])} onChange={handleSettingChange} className="sr-only peer" />
-                        <div className="w-9 h-5 bg-stone-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-stone-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-600"></div>
-                      </label>
-                      <span className={`text-xs font-bold ${settings[`slot_${slot}_active` as keyof typeof settings] ? 'text-stone-900' : 'text-stone-400 line-through'}`}>
-                        {slot.slice(0, 2)}:{slot.slice(2)} Delivery Slot
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              {TIME_SLOTS.map((slot) => {
+                const { isSoldOut, remaining } = getSlotInfo(slot);
+                const isSelected = deliverySlot === slot;
+
+                if (isSoldOut) {
+                  return (
+                    <div
+                      key={slot}
+                      className="py-3 px-2 rounded-xl border border-stone-200 bg-stone-100/80 text-stone-400 flex flex-col items-center justify-center cursor-not-allowed select-none relative overflow-hidden"
+                    >
+                      <span className="text-xs font-bold line-through text-stone-400">{slot}</span>
+                      <span className="text-[9px] font-bold text-rose-500 uppercase tracking-tight mt-0.5">
+                        ✕ Sold Out
                       </span>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] text-stone-500">Max:</span>
-                      <input type="number" name={`limit_${slot}`} value={Number(settings[`limit_${slot}` as keyof typeof settings])} onChange={handleSettingChange} className="w-16 px-2 py-1 bg-white border border-stone-300 rounded-lg text-xs font-bold outline-none focus:border-stone-900 text-center" />
-                      <span className="text-[10px] text-stone-400">boxes</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                }
+
+                return (
+                  <button
+                    type="button"
+                    key={slot}
+                    onClick={() => setDeliverySlot(slot)}
+                    className={`py-3 px-2 rounded-xl text-xs font-bold border transition flex flex-col items-center justify-center cursor-pointer active:scale-95 ${
+                      isSelected
+                        ? 'bg-stone-900 text-white border-stone-900 shadow-sm'
+                        : 'bg-stone-50 text-stone-800 border-stone-300 hover:border-stone-500'
+                    }`}
+                  >
+                    <span className="text-xs">{slot}</span>
+                    <span className={`text-[9px] font-medium mt-0.5 ${isSelected ? 'text-stone-300' : 'text-stone-500'}`}>
+                      {remaining <= 3 ? `${remaining} left!` : 'Available'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 7. 数量選択 & リアルタイム明細内訳 */}
+          <div className="pt-4 border-t border-stone-200 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-xs font-bold text-stone-700 uppercase tracking-wider block">
+                  7. Quantity / 注文数
+                </span>
+                <div className="flex items-center gap-3 mt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setQuantity(Math.max(1, quantity - 1))}
+                    className="w-9 h-9 bg-stone-50 border border-stone-300 rounded-xl font-bold text-stone-800 hover:bg-stone-100 active:scale-95 cursor-pointer"
+                  >
+                    -
+                  </button>
+                  <span className="text-lg font-bold w-6 text-center text-stone-900">{quantity}</span>
+                  <button
+                    type="button"
+                    onClick={() => setQuantity(quantity + 1)}
+                    className="w-9 h-9 bg-stone-50 border border-stone-300 rounded-xl font-bold text-stone-800 hover:bg-stone-100 active:scale-95 cursor-pointer"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+
+              <div className="text-right">
+                <span className="text-[11px] text-stone-500">Total / お支払い合計</span>
+                <div className="text-2xl font-extrabold text-stone-900 mt-0.5">
+                  ¥{grandTotal.toLocaleString()}
+                </div>
               </div>
             </div>
 
+            {/* 明瞭な料金内訳 */}
+            <div className="bg-stone-50 p-4 rounded-2xl border border-stone-200 space-y-2 text-xs">
+              <div className="flex justify-between text-stone-600">
+                <span>Onigiri Bento Box (¥{settings.item_price.toLocaleString()} × {quantity})</span>
+                <span className="font-semibold text-stone-800">¥{itemSubtotal.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-stone-600">
+                <span>Hotel Room Delivery (客室配達料 / 一律)</span>
+                <span className="font-semibold text-stone-800">¥{settings.delivery_fee.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-stone-600">
+                <span>Tax (諸税 / ¥{settings.tax_amount.toLocaleString()} × {quantity})</span>
+                <span className="font-semibold text-stone-800">¥{taxSubtotal.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between pt-2 border-t border-stone-200 font-bold text-stone-900 text-sm">
+                <span>Total Amount / 合計</span>
+                <span>¥{grandTotal.toLocaleString()}</span>
+              </div>
+            </div>
           </div>
-        )}
+
+          {errorMessage && (
+            <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl font-medium">
+              {errorMessage}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={isSubmitting || !deliverySlot || getSlotInfo(deliverySlot).isSoldOut}
+            className="w-full py-4 bg-stone-900 hover:bg-stone-800 disabled:bg-stone-300 text-white font-bold rounded-2xl text-sm transition shadow-sm active:scale-[0.99] cursor-pointer"
+          >
+            {isSubmitting ? 'Processing Order...' : `Order Breakfast / 朝食を予約する (¥${grandTotal.toLocaleString()})`}
+          </button>
+        </form>
 
       </div>
     </div>
