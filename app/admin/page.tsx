@@ -40,6 +40,11 @@ interface CalendarDay {
   note?: string;
 }
 
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+
 export default function AdminDashboard() {
   const [activeTab, setActiveTab] = useState<'operations' | 'calendar' | 'settings'>('operations');
   const [orders, setOrders] = useState<Order[]>([]);
@@ -120,7 +125,7 @@ export default function AdminDashboard() {
       setCalendarData(calMap);
     }
 
-    setLastUpdated(new Date().toLocaleTimeString('ja-JP'));
+    setLastUpdated(new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     setIsLoading(false);
   }, []);
 
@@ -175,12 +180,35 @@ export default function AdminDashboard() {
   const storeRestockNeeded = Math.max(0, inventory.target_stock - takeoutAvailable);
   const kitchenSuggestBoxes = deliveryUncookedBoxes + storeRestockNeeded;
 
+  // 現場画面からのクイックトグル（停止時のみ確認ダイアログ）
+  const handleQuickToggleSlot = async (slot: string) => {
+    const slotKey = slot.replace(':', '');
+    const fieldName = `slot_${slotKey}_active` as keyof typeof settings;
+    const currentVal = Boolean(settings[fieldName]);
+    const nextVal = !currentVal;
+
+    // 停止（SOLD OUT）にするときだけ確認
+    if (!nextVal) {
+      const confirmed = window.confirm(
+        `[CONFIRMATION / 確認]\n\nStop accepting orders for ${slot} delivery slot?\nThis slot will immediately show as SOLD OUT on the order page.\n\n${slot} 枠の注文受付を停止（SOLD OUT）にしますか？`
+      );
+      if (!confirmed) return;
+    }
+
+    setSettings((prev) => ({ ...prev, [fieldName]: nextVal }));
+
+    await supabase
+      .from('settings')
+      .update({ [fieldName]: nextVal, updated_at: new Date().toISOString() })
+      .eq('id', 'default_settings');
+  };
+
   // ステータス更新
   const handleUpdateStatus = async (orderId: number, nextStatus: string) => {
     setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: nextStatus } : o)));
     const { error } = await supabase.from('orders').update({ status: nextStatus }).eq('id', orderId);
     if (error) {
-      alert('ステータス更新に失敗しました: ' + error.message);
+      alert('Failed to update status: ' + error.message);
       fetchAllData();
     }
   };
@@ -193,7 +221,7 @@ export default function AdminDashboard() {
 
   const handleSellCounter = async () => {
     if (takeoutAvailable <= 0) {
-      alert('店頭販売可能分がありません。現物を補充してください。');
+      alert('No physical stock available for takeout. Please restock shelf.');
       return;
     }
     const newStock = Math.max(0, inventory.current_stock - 1);
@@ -202,9 +230,9 @@ export default function AdminDashboard() {
     await supabase.from('store_inventory').update({ current_stock: newStock, sold_count: newSold }).eq('target_date', inventory.target_date);
   };
 
-  // カレンダー操作: 日付タップでのトグル
+  // カレンダー操作
   const handleToggleCalendarDate = async (dateStr: string) => {
-    const currentStatus = calendarData[dateStr] ? calendarData[dateStr].is_open : true; // デフォルトは営業
+    const currentStatus = calendarData[dateStr] ? calendarData[dateStr].is_open : true;
     const nextStatus = !currentStatus;
 
     setCalendarData((prev) => ({
@@ -219,12 +247,12 @@ export default function AdminDashboard() {
     });
   };
 
-  // カレンダー生成ロジック
+  // カレンダーグリッド生成
   const calendarDays = useMemo(() => {
     const { year, month } = currentYearMonth;
     const firstDay = new Date(year, month, 1);
     const lastDay = new Date(year, month + 1, 0);
-    const startingDayOfWeek = firstDay.getDay(); // 0: Sun
+    const startingDayOfWeek = firstDay.getDay();
     const totalDays = lastDay.getDate();
 
     const days = [];
@@ -309,11 +337,13 @@ export default function AdminDashboard() {
     }
   };
 
+  const todayStr = new Date().toISOString().split('T')[0];
+  const isCalendarOpenToday = calendarData[todayStr] ? calendarData[todayStr].is_open : true;
+  const isMasterOpen = settings.is_open && isCalendarOpenToday;
+
   if (isLoading) {
     return <div className="min-h-screen flex items-center justify-center bg-[#f5f5f4] text-stone-500 font-medium">Loading Operations Data...</div>;
   }
-
-  const todayStr = new Date().toISOString().split('T')[0];
 
   return (
     <div className="min-h-screen bg-[#f5f5f4] text-stone-800 font-sans pb-20">
@@ -338,7 +368,7 @@ export default function AdminDashboard() {
                     : 'text-stone-500 hover:text-stone-800'
                 }`}
               >
-                📦 Operations (現場管理)
+                📦 Operations
               </button>
               <button
                 onClick={() => setActiveTab('calendar')}
@@ -348,7 +378,7 @@ export default function AdminDashboard() {
                     : 'text-stone-500 hover:text-stone-800'
                 }`}
               >
-                📅 Calendar (営業カレンダー)
+                📅 Calendar
               </button>
               <button
                 onClick={() => setActiveTab('settings')}
@@ -358,16 +388,20 @@ export default function AdminDashboard() {
                     : 'text-stone-500 hover:text-stone-800'
                 }`}
               >
-                ⚙️ Settings (設定)
+                ⚙️ Settings
               </button>
             </div>
 
             <button
               onClick={fetchAllData}
-              className="text-xs bg-white hover:bg-stone-50 text-stone-700 px-3 py-2 rounded-xl border border-stone-300 font-semibold flex items-center gap-1 transition shadow-2xs"
+              className="text-xs bg-white hover:bg-stone-50 text-stone-800 px-3.5 py-2 rounded-xl border border-stone-300 font-semibold flex items-center gap-2 transition shadow-2xs cursor-pointer active:scale-95"
             >
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              Refresh ({lastUpdated})
+              <span className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-600">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                LIVE
+              </span>
+              <span className="text-stone-300 font-normal">|</span>
+              <span className="text-[11px] text-stone-500 font-mono">{lastUpdated}</span>
             </button>
           </div>
         </div>
@@ -376,29 +410,28 @@ export default function AdminDashboard() {
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
         
         {/* =========================================
-            1. OPERATIONS TAB (現場オペレーション画面)
+            1. OPERATIONS TAB
             ========================================= */}
         {activeTab === 'operations' && (
           <div className="space-y-6">
             
             {/* 上段3カラムサマリー */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              
               <div className="bg-stone-900 text-white p-5 rounded-2xl shadow-sm space-y-3">
                 <span className="text-[10px] uppercase tracking-wider text-stone-400 font-bold block">
-                  KITCHEN SUGGEST / 製造指示
+                  KITCHEN SUGGEST
                 </span>
                 <div className="flex items-baseline gap-2">
                   <span className="text-4xl font-extrabold text-white">{kitchenSuggestBoxes}</span>
-                  <span className="text-xs text-stone-300">boxes to prepare / 箱</span>
+                  <span className="text-xs text-stone-300">boxes to prepare</span>
                 </div>
                 <div className="pt-3 border-t border-stone-800 space-y-1 text-[11px] text-stone-300">
                   <div className="flex justify-between">
-                    <span>Delivery (Uncooked) / デリバリー未製造:</span>
+                    <span>Delivery (Uncooked):</span>
                     <span className="font-bold text-amber-400">{deliveryUncookedBoxes} boxes</span>
                   </div>
                   <div className="flex justify-between">
-                    <span>Store Restock / 店頭補充必要数:</span>
+                    <span>Store Restock:</span>
                     <span className="font-bold text-emerald-400">{storeRestockNeeded} boxes</span>
                   </div>
                 </div>
@@ -406,7 +439,7 @@ export default function AdminDashboard() {
 
               <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
                 <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold block">
-                  ACTIVE DELIVERY ORDERS / デリバリー有効受注
+                  ACTIVE DELIVERY ORDERS
                 </span>
                 <div className="flex items-baseline gap-2">
                   <span className="text-3xl font-extrabold text-stone-900">{activeOrders.length}</span>
@@ -419,41 +452,126 @@ export default function AdminDashboard() {
 
               <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
                 <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold block">
-                  TAKEOUT SOLD (TODAY) / 店頭販売累計
+                  TAKEOUT SOLD (TODAY)
                 </span>
                 <div className="flex items-baseline gap-2">
                   <span className="text-3xl font-extrabold text-stone-900">{inventory.sold_count}</span>
-                  <span className="text-xs text-stone-500">boxes sold / 消化</span>
+                  <span className="text-xs text-stone-500">boxes sold</span>
                 </div>
                 <div className="pt-3 border-t border-stone-100 text-[11px] text-stone-600">
                   Takeout Rev: <span className="font-bold text-stone-900">¥{(inventory.sold_count * (settings.item_price + settings.tax_amount)).toLocaleString()}</span>
                 </div>
               </div>
-
             </div>
 
             {/* 中段：時間枠別状況 ＆ 店頭在庫POS */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               
-              <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
-                <span className="text-xs font-bold text-stone-700 uppercase tracking-wider block">
-                  DELIVERY BY TIME SLOT / 配達枠別 状況
-                </span>
-                <div className="grid grid-cols-4 gap-2">
-                  {['07:00', '08:00', '09:00', '10:00'].map((slot) => (
-                    <div key={slot} className="bg-stone-50 p-3 rounded-xl border border-stone-200 text-center">
-                      <span className="text-[11px] font-bold text-stone-600 block">{slot}</span>
-                      <div className="text-xl font-extrabold text-stone-900 my-1">{slotStats[slot]?.boxes || 0} <span className="text-[10px] font-normal text-stone-500">box</span></div>
-                      <span className="text-[10px] text-stone-400 block">{slotStats[slot]?.orders || 0} orders</span>
-                    </div>
-                  ))}
+              {/* 左側：DELIVERY BY TIME SLOT & LIVE STATUS MONITOR */}
+              <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4 flex flex-col justify-between">
+                
+                <div>
+                  <div className="flex justify-between items-center mb-3">
+                    <span className="text-xs font-bold text-stone-700 uppercase tracking-wider">
+                      DELIVERY SLOTS & INTAKE STATUS
+                    </span>
+                    <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
+                      isMasterOpen 
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300' 
+                        : 'bg-rose-50 text-rose-700 border-rose-300'
+                    }`}>
+                      {isMasterOpen ? '● STORE: OPEN' : '✕ STORE: CLOSED'}
+                    </span>
+                  </div>
+
+                  {/* 4スロット箱数サマリー */}
+                  <div className="grid grid-cols-4 gap-2">
+                    {['07:00', '08:00', '09:00', '10:00'].map((slot) => {
+                      const slotKey = slot.replace(':', '');
+                      const isActive = Boolean(settings[`slot_${slotKey}_active` as keyof typeof settings]);
+                      const maxLimit = Number(settings[`limit_${slotKey}` as keyof typeof settings]) || 10;
+                      const booked = slotStats[slot]?.boxes || 0;
+                      const isSoldOut = !isActive || booked >= maxLimit || !isMasterOpen;
+
+                      return (
+                        <div key={slot} className={`p-2.5 rounded-xl border text-center transition ${
+                          isSoldOut ? 'bg-stone-50/80 border-stone-200 opacity-70' : 'bg-stone-50 border-stone-200'
+                        }`}>
+                          <span className="text-[11px] font-bold text-stone-600 block">{slot}</span>
+                          <div className="text-lg font-extrabold text-stone-900 my-0.5">
+                            {booked} <span className="text-[9px] font-normal text-stone-400">/ {maxLimit}</span>
+                          </div>
+                          <span className={`text-[9px] font-extrabold uppercase px-1.5 py-0.2 rounded ${
+                            isSoldOut ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-800'
+                          }`}>
+                            {isSoldOut ? 'SOLD' : 'OPEN'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
+
+                {/* スロットごとの詳細ステータス ＆ クイックトグル（安全ガード付き） */}
+                <div className="pt-3 border-t border-stone-100 space-y-2">
+                  <span className="text-[10px] uppercase tracking-wider text-stone-400 font-bold block">
+                    LIVE SLOT CONTROL (QUICK TOGGLE)
+                  </span>
+
+                  <div className="space-y-1.5">
+                    {['07:00', '08:00', '09:00', '10:00'].map((slot) => {
+                      const slotKey = slot.replace(':', '');
+                      const isActive = Boolean(settings[`slot_${slotKey}_active` as keyof typeof settings]);
+                      const maxLimit = Number(settings[`limit_${slotKey}` as keyof typeof settings]) || 10;
+                      const booked = slotStats[slot]?.boxes || 0;
+                      const remaining = Math.max(0, maxLimit - booked);
+                      const isSoldOut = !isActive || remaining <= 0 || !isMasterOpen;
+
+                      return (
+                        <div
+                          key={`row-${slot}`}
+                          className={`flex items-center justify-between px-3 py-1.5 rounded-xl border text-xs transition ${
+                            isSoldOut ? 'bg-rose-50/40 border-rose-200' : 'bg-stone-50 border-stone-200'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <button
+                              onClick={() => handleQuickToggleSlot(slot)}
+                              className={`w-7 h-4 rounded-full transition relative cursor-pointer ${
+                                isActive ? 'bg-emerald-600' : 'bg-stone-300'
+                              }`}
+                              title={isActive ? 'Click to mark as SOLD OUT (Confirm required)' : 'Click to reopen slot'}
+                            >
+                              <div className={`w-3 h-3 rounded-full bg-white transition absolute top-0.5 ${
+                                isActive ? 'right-0.5' : 'left-0.5'
+                              }`}></div>
+                            </button>
+                            <span className="font-bold text-stone-800 text-[11px]">{slot} Slot</span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-stone-500 font-mono">
+                              {booked}/{maxLimit} bxs
+                            </span>
+                            <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
+                              isSoldOut ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-800'
+                            }`}>
+                              {isSoldOut ? '✕ SOLD OUT' : `● OPEN (${remaining} left)`}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
               </div>
 
+              {/* 右側：店頭在庫 & POS */}
               <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
                 <div className="flex justify-between items-center">
                   <span className="text-xs font-bold text-stone-700 uppercase tracking-wider">
-                    STORE INVENTORY & POS / 店頭在庫
+                    STORE INVENTORY & POS
                   </span>
                   <span className="text-[11px] text-stone-500">
                     Target: {inventory.target_stock} boxes
@@ -461,34 +579,34 @@ export default function AdminDashboard() {
                 </div>
 
                 <div className="flex items-baseline justify-between bg-stone-50 p-3.5 rounded-xl border border-stone-200">
-                  <span className="text-xs font-bold text-stone-600">TOTAL PHYSICAL SHELF / 店頭総現物</span>
+                  <span className="text-xs font-bold text-stone-600">TOTAL PHYSICAL SHELF</span>
                   <span className="text-2xl font-extrabold text-stone-900">{inventory.current_stock} <span className="text-xs font-normal text-stone-500">boxes</span></span>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 text-xs">
                   <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
-                    <span className="text-[10px] text-emerald-800 font-bold block">Takeout Free / 店頭販売可</span>
+                    <span className="text-[10px] text-emerald-800 font-bold block">Takeout Free</span>
                     <span className="text-lg font-bold text-emerald-900">{takeoutAvailable} boxes</span>
                   </div>
                   <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl">
-                    <span className="text-[10px] text-purple-800 font-bold block">Delivery Kept / 店頭確保 (ready_store)</span>
+                    <span className="text-[10px] text-purple-800 font-bold block">Delivery Kept (ready_store)</span>
                     <span className="text-lg font-bold text-purple-900">{deliveryKeptBoxes} boxes</span>
                   </div>
                 </div>
 
                 <div className="flex justify-between items-center pt-2">
-                  <span className="text-xs text-stone-500 font-medium">Shelf Adjust / 総現物調整:</span>
+                  <span className="text-xs text-stone-500 font-medium">Shelf Adjust:</span>
                   <div className="flex gap-2">
-                    <button onClick={() => handleShelfChange(-1)} className="w-8 h-8 bg-stone-100 border border-stone-300 rounded-lg font-bold hover:bg-stone-200">-</button>
-                    <button onClick={() => handleShelfChange(1)} className="w-8 h-8 bg-stone-100 border border-stone-300 rounded-lg font-bold hover:bg-stone-200">+</button>
+                    <button onClick={() => handleShelfChange(-1)} className="w-8 h-8 bg-stone-100 border border-stone-300 rounded-lg font-bold hover:bg-stone-200 cursor-pointer">-</button>
+                    <button onClick={() => handleShelfChange(1)} className="w-8 h-8 bg-stone-100 border border-stone-300 rounded-lg font-bold hover:bg-stone-200 cursor-pointer">+</button>
                   </div>
                 </div>
 
                 <button
                   onClick={handleSellCounter}
-                  className="w-full py-3 bg-emerald-700 hover:bg-emerald-800 active:scale-[0.99] text-white rounded-xl text-xs font-bold transition shadow-sm"
+                  className="w-full py-3 bg-emerald-700 hover:bg-emerald-800 active:scale-[0.99] text-white rounded-xl text-xs font-bold transition shadow-sm cursor-pointer"
                 >
-                  Sell 1 Box at Counter / 店頭で1箱販売
+                  Sell 1 Box at Counter
                 </button>
               </div>
 
@@ -497,7 +615,7 @@ export default function AdminDashboard() {
             {/* 下段：デリバリー受注一覧テーブル */}
             <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
               <span className="text-xs font-bold text-stone-700 uppercase tracking-wider block">
-                DELIVERY ORDERS LIST / デリバリー受注一覧
+                DELIVERY ORDERS LIST
               </span>
 
               <div className="overflow-x-auto">
@@ -507,12 +625,12 @@ export default function AdminDashboard() {
                       <th className="py-2.5 px-3">ID</th>
                       <th className="py-2.5 px-3">Status</th>
                       <th className="py-2.5 px-3">Slot</th>
-                      <th className="py-2.5 px-3">Hotel / お届け先</th>
+                      <th className="py-2.5 px-3">Hotel</th>
                       <th className="py-2.5 px-3">Room</th>
-                      <th className="py-2.5 px-3">Guest / お名前</th>
+                      <th className="py-2.5 px-3">Guest Name</th>
                       <th className="py-2.5 px-3 text-right">Qty</th>
                       <th className="py-2.5 px-3 text-right">Total</th>
-                      <th className="py-2.5 px-3 text-center">Action / ステータス変更</th>
+                      <th className="py-2.5 px-3 text-center">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-stone-100">
@@ -548,13 +666,13 @@ export default function AdminDashboard() {
                               onChange={(e) => handleUpdateStatus(o.id, e.target.value)}
                               className="bg-stone-50 border border-stone-300 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-stone-800 outline-none focus:border-stone-900 cursor-pointer"
                             >
-                              <option value="order_received">1. order received (新規受付 / 未製造)</option>
-                              <option value="ready_store">2-A. ready store (店頭確保・完成)</option>
-                              <option value="ready_kitchen">2-B. ready kitchen (キッチン待機・完成)</option>
-                              <option value="delivering">3. delivering (配達中)</option>
-                              <option value="delivered">4. delivered (配達完了)</option>
-                              <option value="undelivered">5. undelivered (未達・不在)</option>
-                              <option value="cancelled">6. cancelled (キャンセル)</option>
+                              <option value="order_received">1. order received (Uncooked)</option>
+                              <option value="ready_store">2-A. ready store (Ready at Store)</option>
+                              <option value="ready_kitchen">2-B. ready kitchen (Ready at Kitchen)</option>
+                              <option value="delivering">3. delivering (In Delivery)</option>
+                              <option value="delivered">4. delivered (Completed)</option>
+                              <option value="undelivered">5. undelivered (Failed/No-show)</option>
+                              <option value="cancelled">6. cancelled</option>
                             </select>
                           </td>
                         </tr>
@@ -569,49 +687,44 @@ export default function AdminDashboard() {
         )}
 
         {/* =========================================
-            2. CALENDAR TAB (営業カレンダー設定)
+            2. CALENDAR TAB
             ========================================= */}
         {activeTab === 'calendar' && (
           <div className="max-w-3xl mx-auto space-y-6">
-            
             <div className="flex justify-between items-center">
               <div>
-                <h2 className="text-xl font-bold text-stone-900">Business Calendar / 営業カレンダー</h2>
+                <h2 className="text-xl font-bold text-stone-900">Business Calendar</h2>
                 <p className="text-xs text-stone-500 mt-0.5">
-                  日付をクリックして「🟢 営業」と「🔴 定休日」を切り替えます（自動保存）。
+                  Click any date to toggle between OPEN and CLOSED (Auto-saves).
                 </p>
               </div>
 
-              {/* 年月送りボタン */}
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setCurrentYearMonth(prev => {
                     const d = new Date(prev.year, prev.month - 1, 1);
                     return { year: d.getFullYear(), month: d.getMonth() };
                   })}
-                  className="px-3 py-1.5 bg-white border border-stone-300 rounded-lg text-xs font-bold hover:bg-stone-100"
+                  className="px-3 py-1.5 bg-white border border-stone-300 rounded-lg text-xs font-bold hover:bg-stone-100 cursor-pointer"
                 >
-                  ◀ 前月
+                  ◀ Prev
                 </button>
-                <span className="text-sm font-extrabold text-stone-800 min-w-24 text-center">
-                  {currentYearMonth.year}年 {currentYearMonth.month + 1}月
+                <span className="text-sm font-extrabold text-stone-800 min-w-32 text-center">
+                  {MONTH_NAMES[currentYearMonth.month]} {currentYearMonth.year}
                 </span>
                 <button
                   onClick={() => setCurrentYearMonth(prev => {
                     const d = new Date(prev.year, prev.month + 1, 1);
                     return { year: d.getFullYear(), month: d.getMonth() };
                   })}
-                  className="px-3 py-1.5 bg-white border border-stone-300 rounded-lg text-xs font-bold hover:bg-stone-100"
+                  className="px-3 py-1.5 bg-white border border-stone-300 rounded-lg text-xs font-bold hover:bg-stone-100 cursor-pointer"
                 >
-                  次月 ▶
+                  Next ▶
                 </button>
               </div>
             </div>
 
-            {/* カレンダー本体 */}
             <div className="bg-white p-6 rounded-3xl border border-stone-200 shadow-sm space-y-4">
-              
-              {/* 曜日ヘッダー */}
               <div className="grid grid-cols-7 gap-2 text-center text-xs font-bold pb-2 border-b border-stone-100">
                 <span className="text-rose-600">SUN</span>
                 <span className="text-stone-600">MON</span>
@@ -622,7 +735,6 @@ export default function AdminDashboard() {
                 <span className="text-blue-600">SAT</span>
               </div>
 
-              {/* 日付グリッド */}
               <div className="grid grid-cols-7 gap-2">
                 {calendarDays.map((dateStr, idx) => {
                   if (!dateStr) {
@@ -630,7 +742,7 @@ export default function AdminDashboard() {
                   }
 
                   const dayNum = parseInt(dateStr.split('-')[2], 10);
-                  const isOpen = calendarData[dateStr] ? calendarData[dateStr].is_open : true; // デフォルトは営業
+                  const isOpen = calendarData[dateStr] ? calendarData[dateStr].is_open : true;
                   const isToday = dateStr === todayStr;
 
                   return (
@@ -652,12 +764,12 @@ export default function AdminDashboard() {
 
                       <div className="w-full text-center">
                         {isOpen ? (
-                          <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100/80 px-2 py-0.5 rounded-full border border-emerald-300 inline-block">
-                            ● 営業中
+                          <span className="text-[10px] font-extrabold text-emerald-800 bg-emerald-100/90 px-2.5 py-0.5 rounded-full border border-emerald-300 inline-block tracking-wide">
+                            ● OPEN
                           </span>
                         ) : (
-                          <span className="text-[10px] font-bold text-rose-700 bg-rose-100/80 px-2 py-0.5 rounded-full border border-rose-300 inline-block">
-                            ✕ 定休日
+                          <span className="text-[10px] font-extrabold text-rose-700 bg-rose-100/90 px-2.5 py-0.5 rounded-full border border-rose-300 inline-block tracking-wide">
+                            ✕ CLOSED
                           </span>
                         )}
                       </div>
@@ -666,29 +778,25 @@ export default function AdminDashboard() {
                 })}
               </div>
 
-              {/* 凡例 */}
-              <div className="flex justify-end gap-4 pt-3 border-t border-stone-100 text-[11px] text-stone-500">
+              <div className="flex justify-end gap-5 pt-3 border-t border-stone-100 text-[11px] text-stone-500">
                 <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-full bg-emerald-100 border border-emerald-300"></span>
-                  <span>営業日（注文受付）</span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                  <span className="font-medium text-stone-700">OPEN (Accepts orders)</span>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-full bg-rose-100 border border-rose-300"></span>
-                  <span>定休日（受付完全停止）</span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
+                  <span className="font-medium text-stone-700">CLOSED (Blocked)</span>
                 </div>
               </div>
-
             </div>
-
           </div>
         )}
 
         {/* =========================================
-            3. SETTINGS TAB (設定コントロールパネル)
+            3. SETTINGS TAB
             ========================================= */}
         {activeTab === 'settings' && (
           <div className="max-w-3xl mx-auto space-y-6">
-            
             <div className="flex justify-between items-center">
               <h2 className="text-xl font-bold text-stone-900">Store Settings & Limits</h2>
               <button
@@ -706,15 +814,14 @@ export default function AdminDashboard() {
               </div>
             )}
 
-            {/* 1. 全体営業ステータス */}
             <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
               <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">
-                1. Store Master Status (店舗全体ステータス)
+                1. Store Master Status
               </h3>
               <div className="flex items-center justify-between p-3.5 bg-stone-50 rounded-xl border border-stone-200">
                 <div>
-                  <div className="text-xs font-bold text-stone-900">Accept New Orders (新規受付ON/OFF)</div>
-                  <div className="text-[11px] text-stone-500 mt-0.5">OFFにすると全時間帯が一括で受付終了となり、お客さんの注文を停止します。</div>
+                  <div className="text-xs font-bold text-stone-900">Accept New Orders (Instant Cutoff)</div>
+                  <div className="text-[11px] text-stone-500 mt-0.5">Toggle OFF to immediately close order intake for all time slots.</div>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer shrink-0">
                   <input type="checkbox" name="is_open" checked={settings.is_open} onChange={handleSettingChange} className="sr-only peer" />
@@ -723,28 +830,27 @@ export default function AdminDashboard() {
               </div>
             </div>
 
-            {/* 2. 料金設定 */}
             <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
               <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">
-                2. Price & Taxes (料金設定)
+                2. Price & Taxes
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Item Price (本体価格 /箱)</label>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Item Price (/box)</label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500 text-xs">¥</span>
                     <input type="number" name="item_price" value={settings.item_price} onChange={handleSettingChange} className="w-full pl-7 pr-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-bold outline-none focus:border-stone-900" />
                   </div>
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Delivery Fee (配達料 /注文)</label>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Delivery Fee (/order)</label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500 text-xs">¥</span>
                     <input type="number" name="delivery_fee" value={settings.delivery_fee} onChange={handleSettingChange} className="w-full pl-7 pr-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-bold outline-none focus:border-stone-900" />
                   </div>
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Tax Amount (諸税 /箱)</label>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Tax Amount (/box)</label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500 text-xs">¥</span>
                     <input type="number" name="tax_amount" value={settings.tax_amount} onChange={handleSettingChange} className="w-full pl-7 pr-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-bold outline-none focus:border-stone-900" />
@@ -753,27 +859,25 @@ export default function AdminDashboard() {
               </div>
             </div>
 
-            {/* 3. 配達エリア設定 */}
             <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
               <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">
-                3. Delivery Coverage (配達可能エリア)
+                3. Delivery Coverage
               </h3>
               <div>
                 <div className="flex justify-between items-center mb-1">
-                  <label className="text-[11px] font-bold text-stone-600">Delivery Radius (配達半径 km)</label>
+                  <label className="text-[11px] font-bold text-stone-600">Delivery Radius (km)</label>
                   <span className="font-extrabold text-sm text-stone-900">{Number(settings.delivery_radius_km).toFixed(1)} km</span>
                 </div>
                 <input type="range" name="delivery_radius_km" min="1.0" max="5.0" step="0.1" value={settings.delivery_radius_km} onChange={handleSettingChange} className="w-full accent-stone-900" />
-                <p className="text-[10px] text-stone-400 mt-1">※半径を変更すると、フロント画面のホテル選択一覧が自動で絞り込まれます。</p>
+                <p className="text-[10px] text-stone-400 mt-1">※Adjusting this value filters available hotels on customer order page automatically.</p>
               </div>
             </div>
 
-            {/* 4. 時間枠・上限設定 */}
             <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
               <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">
-                4. Time Slot Capacity & Control (時間枠の受付上限 ＆ 強制停止)
+                4. Time Slot Capacity & Control
               </h3>
-              <p className="text-[10px] text-stone-400">スイッチをOFFにすると、上限に達していなくても即座に「SOLD OUT」にできます。</p>
+              <p className="text-[10px] text-stone-400">Toggle OFF to instantly mark specific slots as SOLD OUT.</p>
               
               <div className="space-y-2.5">
                 {['0700', '0800', '0900', '1000'].map((slot) => (
