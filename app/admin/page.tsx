@@ -1,631 +1,635 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { HOTELS_MASTER } from '@/data/hotels';
-
-interface HotelInfo {
-  id?: number | string;
-  name?: string;
-  name_ja?: string;
-  area?: string;
-}
 
 interface Order {
   id: number;
   created_at: string;
-  delivery_time?: string;
-  delivery_slot?: string;
   hotel_name?: string;
   hotel?: string;
-  hotel_id?: number;
-  hotels?: HotelInfo | null;
-  room_number: string;
+  hotel_id?: string;
+  room_number?: string;
+  room?: string;
   guest_name?: string;
   name?: string;
   contact_email?: string;
   email?: string;
-  quantity: number;
-  total_price: number;
+  delivery_time?: string;
+  delivery_slot?: string;
+  slot?: string;
+  quantity?: number;
+  qty?: number;
+  total_price?: number;
+  price?: number;
   status: string;
 }
 
 interface StoreInventory {
-  id: number;
+  id?: number;
   target_date: string;
   target_stock: number;
   current_stock: number;
   sold_count: number;
 }
 
-const DELIVERY_SLOTS = ['07:00', '08:00', '09:00', '10:00'];
-
-const STATUS_CONFIG: Record<string, { label: string; location: string; color: string }> = {
-  pending: {
-    label: '🟡 Received / 受注済',
-    location: 'Kitchen (Not Started) / 未製造',
-    color: 'bg-amber-50 text-amber-800 border-amber-300',
-  },
-  ready_kitchen: {
-    label: '🟠 Ready (Kitchen) / 調理済',
-    location: 'In Kitchen / 厨房保管',
-    color: 'bg-orange-50 text-orange-800 border-orange-300',
-  },
-  ready_store: {
-    label: '🔵 Ready (Store) / 店舗待機',
-    location: 'Store Shelf / 配送棚待機',
-    color: 'bg-blue-50 text-blue-800 border-blue-300',
-  },
-  delivering: {
-    label: '🟣 Delivering / 配達中',
-    location: 'With Driver / 持ち出し済',
-    color: 'bg-purple-50 text-purple-800 border-purple-300',
-  },
-  delivered: {
-    label: '🟢 Delivered / 配達完了',
-    location: 'Completed / お届け完了',
-    color: 'bg-emerald-50 text-emerald-800 border-emerald-300',
-  },
-  cancelled: {
-    label: '⚪ Cancelled / 取消',
-    location: 'Void / 無効',
-    color: 'bg-stone-100 text-stone-500 border-stone-300',
-  },
-};
-
-function resolveArea(order: Order): string {
-  if (order.hotels?.area) return order.hotels.area;
-
-  const targetName = (order.hotels?.name || order.hotels?.name_ja || order.hotel_name || order.hotel || '').toLowerCase().replace(/\s+/g, '');
-  if (!targetName) return '-';
-
-  const matched = HOTELS_MASTER.find((h) => {
-    const hName = h.name.toLowerCase().replace(/\s+/g, '');
-    const hNameJa = h.nameJa.toLowerCase().replace(/\s+/g, '');
-    return hName === targetName || hNameJa === targetName || targetName.includes(hNameJa) || hNameJa.includes(targetName);
-  });
-
-  return matched?.area || '-';
-}
-
 export default function AdminDashboard() {
+  const [activeTab, setActiveTab] = useState<'operations' | 'settings'>('operations');
   const [orders, setOrders] = useState<Order[]>([]);
-  const [inventory, setInventory] = useState<StoreInventory | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [isEditingTarget, setIsEditingTarget] = useState(false);
-  const [tempTargetStock, setTempTargetStock] = useState(10);
+  const [inventory, setInventory] = useState<StoreInventory>({
+    target_date: new Date().toISOString().split('T')[0],
+    target_stock: 10,
+    current_stock: 10,
+    sold_count: 0,
+  });
+  const [isLoading, setIsLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
-  // ポップアップ用ステート
-  const [targetOrder, setTargetOrder] = useState<Order | null>(null);
-  const [nextStatus, setNextStatus] = useState<string>('');
-  const [toastMessage, setToastMessage] = useState<string>('');
+  // === Settings State ===
+  const [settings, setSettings] = useState({
+    item_price: 1500,
+    delivery_fee: 150,
+    tax_amount: 150,
+    delivery_radius_km: 2.5,
+    is_open: true,
+    limit_0700: 10,
+    limit_0800: 15,
+    limit_0900: 15,
+    limit_1000: 10,
+    slot_0700_active: true,
+    slot_0800_active: true,
+    slot_0900_active: true,
+    slot_1000_active: true,
+  });
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState('');
 
-  const fetchData = useCallback(async () => {
-    const today = new Date().toISOString().split('T')[0];
-
-    const { data: orderData } = await supabase
+  const fetchAllData = useCallback(async () => {
+    // 1. Orders
+    const { data: orderData, error: orderErr } = await supabase
       .from('orders')
-      .select('*, hotels(*)')
+      .select('*')
       .order('id', { ascending: false });
+    if (orderData && !orderErr) setOrders(orderData as Order[]);
 
-    if (orderData) {
-      setOrders(orderData as Order[]);
-    }
-
-    let { data: invData } = await supabase
+    // 2. Inventory
+    const today = new Date().toISOString().split('T')[0];
+    const { data: invData } = await supabase
       .from('store_inventory')
       .select('*')
       .eq('target_date', today)
       .maybeSingle();
 
-    if (!invData) {
-      const { data: newInv } = await supabase
-        .from('store_inventory')
-        .insert([{ target_date: today, target_stock: 10, current_stock: 10, sold_count: 0 }])
-        .select()
-        .single();
-      invData = newInv;
-    }
-
     if (invData) {
       setInventory(invData);
-      setTempTargetStock(invData.target_stock);
+    } else {
+      const initInv = { target_date: today, target_stock: 10, current_stock: 10, sold_count: 0 };
+      const { data: createdInv } = await supabase.from('store_inventory').insert([initInv]).select().maybeSingle();
+      if (createdInv) setInventory(createdInv);
     }
 
-    setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-    setLoading(false);
+    // 3. Settings
+    const { data: setData } = await supabase
+      .from('settings')
+      .select('*')
+      .eq('id', 'default_settings')
+      .maybeSingle();
+    if (setData) setSettings(setData);
+
+    setLastUpdated(new Date().toLocaleTimeString('ja-JP'));
+    setIsLoading(false);
   }, []);
 
   useEffect(() => {
-    fetchData();
+    fetchAllData();
+    const interval = setInterval(fetchAllData, 15000);
+    return () => clearInterval(interval);
+  }, [fetchAllData]);
 
-    const ordersChannel = supabase
-      .channel('admin_orders')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
-        fetchData();
-      })
-      .subscribe();
+  // 有効受注（キャンセル・未達以外）
+  const activeOrders = useMemo(() => {
+    return orders.filter((o) => o.status !== 'cancelled' && o.status !== 'undelivered');
+  }, [orders]);
 
-    const invChannel = supabase
-      .channel('admin_inventory')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'store_inventory' }, () => {
-        fetchData();
-      })
-      .subscribe();
+  const activeDeliveryBoxes = useMemo(() => {
+    return activeOrders.reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0);
+  }, [activeOrders]);
 
-    const timer = setInterval(() => {
-      fetchData();
-    }, 30000);
+  const deliveryRevenue = useMemo(() => {
+    return activeOrders.reduce((sum, o) => sum + (o.total_price || o.price || 0), 0);
+  }, [activeOrders]);
 
-    const handleFocus = () => {
-      fetchData();
+  // 配達枠ごとの集計
+  const slotStats = useMemo(() => {
+    const stats: Record<string, { boxes: number; orders: number }> = {
+      '07:00': { boxes: 0, orders: 0 },
+      '08:00': { boxes: 0, orders: 0 },
+      '09:00': { boxes: 0, orders: 0 },
+      '10:00': { boxes: 0, orders: 0 },
     };
-    window.addEventListener('focus', handleFocus);
+    activeOrders.forEach((o) => {
+      const slot = o.delivery_time || o.delivery_slot || o.slot || '08:00';
+      if (!stats[slot]) stats[slot] = { boxes: 0, orders: 0 };
+      stats[slot].boxes += o.quantity || o.qty || 1;
+      stats[slot].orders += 1;
+    });
+    return stats;
+  }, [activeOrders]);
 
-    return () => {
-      supabase.removeChannel(ordersChannel);
-      supabase.removeChannel(invChannel);
-      clearInterval(timer);
-      window.removeEventListener('focus', handleFocus);
-    };
-  }, [fetchData]);
+  // 1. 店頭でキープ（確保）されている箱数 (ready_store)
+  const deliveryKeptBoxes = useMemo(() => {
+    return orders
+      .filter((o) => o.status === 'ready_store')
+      .reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0);
+  }, [orders]);
 
-  const openStatusModal = (order: Order, status: string) => {
-    setTargetOrder(order);
-    setNextStatus(status);
+  // 2. キッチン側でまだ製造が必要な箱数 (order_received, pending のみ)
+  // ※ ready_kitchen はすでに完成しているため、未製造からは除外されます
+  const deliveryUncookedBoxes = useMemo(() => {
+    return orders
+      .filter((o) => o.status === 'order_received' || o.status === 'pending')
+      .reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0);
+  }, [orders]);
+
+  // 3. 店頭販売可能数
+  const takeoutAvailable = Math.max(0, inventory.current_stock - deliveryKeptBoxes);
+  
+  // 4. 店頭補充必要数
+  const storeRestockNeeded = Math.max(0, inventory.target_stock - takeoutAvailable);
+  
+  // 5. キッチン製造指示数 = デリバリー未製造 + 店頭補充必要数
+  const kitchenSuggestBoxes = deliveryUncookedBoxes + storeRestockNeeded;
+
+  // ステータス更新
+  const handleUpdateStatus = async (orderId: number, nextStatus: string) => {
+    setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status: nextStatus } : o)));
+    const { error } = await supabase.from('orders').update({ status: nextStatus }).eq('id', orderId);
+    if (error) {
+      alert('ステータス更新に失敗しました: ' + error.message);
+      fetchAllData();
+    }
   };
 
-  const confirmStatusChange = async () => {
-    if (!targetOrder || !nextStatus) return;
-
-    const orderId = targetOrder.id;
-    const label = STATUS_CONFIG[nextStatus]?.label || nextStatus;
-
-    setOrders((prev) =>
-      prev.map((o) => (o.id === orderId ? { ...o, status: nextStatus } : o))
-    );
-
-    setTargetOrder(null);
-
-    await supabase
-      .from('orders')
-      .update({ status: nextStatus })
-      .eq('id', orderId);
-
-    setToastMessage(`Order #${orderId} updated to [${label}]`);
-    setTimeout(() => setToastMessage(''), 3500);
+  const handleShelfChange = async (delta: number) => {
+    const newStock = Math.max(0, inventory.current_stock + delta);
+    setInventory((prev) => ({ ...prev, current_stock: newStock }));
+    await supabase.from('store_inventory').update({ current_stock: newStock }).eq('target_date', inventory.target_date);
   };
 
-  const handleSellOne = async () => {
-    if (!inventory || inventory.current_stock <= 0) return;
-    const nextCurrent = inventory.current_stock - 1;
-    const nextSold = inventory.sold_count + 1;
-
-    setInventory({ ...inventory, current_stock: nextCurrent, sold_count: nextSold });
-
-    await supabase
-      .from('store_inventory')
-      .update({ current_stock: nextCurrent, sold_count: nextSold, updated_at: new Date().toISOString() })
-      .eq('id', inventory.id);
+  const handleSellCounter = async () => {
+    if (takeoutAvailable <= 0) {
+      alert('店頭販売可能分がありません。現物を補充してください。');
+      return;
+    }
+    const newStock = Math.max(0, inventory.current_stock - 1);
+    const newSold = inventory.sold_count + 1;
+    setInventory((prev) => ({ ...prev, current_stock: newStock, sold_count: newSold }));
+    await supabase.from('store_inventory').update({ current_stock: newStock, sold_count: newSold }).eq('target_date', inventory.target_date);
   };
 
-  const handleAdjustStock = async (delta: number) => {
-    if (!inventory) return;
-    const nextCurrent = Math.max(0, inventory.current_stock + delta);
+  // 設定保存
+  const handleSaveSettings = async () => {
+    setIsSaving(true);
+    setSaveMessage('');
+    const { error } = await supabase
+      .from('settings')
+      .update({
+        item_price: settings.item_price,
+        delivery_fee: settings.delivery_fee,
+        tax_amount: settings.tax_amount,
+        delivery_radius_km: settings.delivery_radius_km,
+        is_open: settings.is_open,
+        limit_0700: settings.limit_0700,
+        limit_0800: settings.limit_0800,
+        limit_0900: settings.limit_0900,
+        limit_1000: settings.limit_1000,
+        slot_0700_active: settings.slot_0700_active,
+        slot_0800_active: settings.slot_0800_active,
+        slot_0900_active: settings.slot_0900_active,
+        slot_1000_active: settings.slot_1000_active,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', 'default_settings');
 
-    setInventory({ ...inventory, current_stock: nextCurrent });
-
-    await supabase
-      .from('store_inventory')
-      .update({ current_stock: nextCurrent, updated_at: new Date().toISOString() })
-      .eq('id', inventory.id);
+    setIsSaving(false);
+    if (error) {
+      setSaveMessage('❌ Error saving settings: ' + error.message);
+    } else {
+      setSaveMessage('✓ Settings saved successfully!');
+      setTimeout(() => setSaveMessage(''), 3000);
+    }
   };
 
-  const handleSaveTargetStock = async () => {
-    if (!inventory) return;
-    setIsEditingTarget(false);
-
-    setInventory({ ...inventory, target_stock: tempTargetStock });
-
-    await supabase
-      .from('store_inventory')
-      .update({ target_stock: tempTargetStock, updated_at: new Date().toISOString() })
-      .eq('id', inventory.id);
+  const handleSettingChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value, type, checked } = e.target;
+    setSettings((prev) => ({
+      ...prev,
+      [name]: type === 'checkbox' ? checked : Number(value),
+    }));
   };
 
-  const slotStats = DELIVERY_SLOTS.map((slot) => {
-    const slotOrders = orders.filter((o) => (o.delivery_time || o.delivery_slot) === slot && o.status !== 'cancelled');
-    const count = slotOrders.length;
-    const totalBoxes = slotOrders.reduce((sum, o) => sum + (o.quantity || 1), 0);
-    return { slot, count, totalBoxes };
-  });
+  const getHotelDisplayName = (order: Order) => {
+    const raw = order.hotel_name || order.hotel || order.hotel_id || '';
+    const found = HOTELS_MASTER.find((h) => String(h.id) === String(raw) || h.name === raw || h.nameJa === raw);
+    if (found) {
+      return `${found.nameJa || found.name}`;
+    }
+    return raw || 'Hotel Unspecified';
+  };
 
-  const activeOrders = orders.filter((o) => o.status !== 'cancelled');
-  const totalDeliveryBoxes = activeOrders.reduce((sum, o) => sum + (o.quantity || 1), 0);
+  // ステータスごとの配色バッジ
+  const renderStatusBadge = (status: string) => {
+    switch (status) {
+      case 'order_received':
+      case 'pending':
+        return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800">order received</span>;
+      case 'ready_store':
+        return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800">ready store</span>;
+      case 'ready_kitchen':
+      case 'cooking':
+        return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">ready kitchen</span>;
+      case 'delivering':
+        return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-100 text-orange-800">delivering</span>;
+      case 'delivered':
+        return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">delivered</span>;
+      case 'undelivered':
+        return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800">undelivered</span>;
+      case 'cancelled':
+        return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-stone-200 text-stone-600">cancelled</span>;
+      default:
+        return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-stone-100 text-stone-700">{status}</span>;
+    }
+  };
 
-  const deliveryStoreBoxes = orders
-    .filter((o) => o.status === 'ready_store')
-    .reduce((sum, o) => sum + (o.quantity || 1), 0);
-
-  const totalStoreStock = inventory?.current_stock || 0;
-  const takeoutFreeStock = Math.max(0, totalStoreStock - deliveryStoreBoxes);
-  const targetStock = inventory?.target_stock || 10;
-  const storeShortage = Math.max(0, targetStock - takeoutFreeStock);
-
-  const pendingDeliveryBoxes = orders
-    .filter((o) => !o.status || o.status === 'pending')
-    .reduce((sum, o) => sum + (o.quantity || 1), 0);
-
-  const totalSuggestBoxes = pendingDeliveryBoxes + storeShortage;
+  if (isLoading) {
+    return <div className="min-h-screen flex items-center justify-center bg-[#f5f5f4] text-stone-500 font-medium">Loading Operations Data...</div>;
+  }
 
   return (
-    <div className="min-h-screen bg-stone-100 text-stone-800 p-4 md:p-8 relative">
+    <div className="min-h-screen bg-[#f5f5f4] text-stone-800 font-sans pb-20">
       
-      {/* 通知トースト */}
-      {toastMessage && (
-        <div className="fixed top-5 right-5 z-50 bg-stone-900 text-white text-xs px-4 py-3 rounded-xl shadow-lg border border-stone-700 animate-bounce">
-          {toastMessage}
-        </div>
-      )}
-
-      {/* ステータス変更確認モーダル */}
-      {targetOrder && (
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl border border-stone-200 space-y-4">
-            <div>
-              <h3 className="text-base font-bold text-stone-900">Confirm Status / 状態変更確認</h3>
-              <p className="text-xs text-stone-500 mt-1">
-                Order <span className="font-semibold text-stone-800">#{targetOrder.id}</span> ({targetOrder.guest_name || targetOrder.name})
-              </p>
-            </div>
-
-            <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 space-y-2 text-xs">
-              <div className="flex justify-between">
-                <span className="text-stone-500">Current / 現在:</span>
-                <span className="font-medium text-stone-800">
-                  {STATUS_CONFIG[targetOrder.status]?.label || '🟡 Received / 受注済'}
-                </span>
-              </div>
-              <div className="flex justify-between pt-2 border-t border-stone-200">
-                <span className="text-stone-500">New / 変更後:</span>
-                <span className="font-bold text-stone-900 text-sm">
-                  {STATUS_CONFIG[nextStatus]?.label}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-stone-500">Item Location / 所在:</span>
-                <span className="font-semibold text-emerald-700">
-                  {STATUS_CONFIG[nextStatus]?.location}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setTargetOrder(null)}
-                className="flex-1 py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-700 font-semibold rounded-xl text-xs transition"
-              >
-                Cancel / 取消
-              </button>
-              <button
-                type="button"
-                onClick={confirmStatusChange}
-                className="flex-1 py-2.5 bg-stone-900 hover:bg-stone-800 text-white font-semibold rounded-xl text-xs transition shadow-sm"
-              >
-                Update / 確定
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="max-w-6xl mx-auto space-y-6">
-        
-        {/* ヘッダー */}
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-6 rounded-2xl shadow-sm border border-stone-200 gap-4">
-          <div>
-            <h1 className="text-2xl font-bold tracking-wide text-stone-900">
-              ASAKUSA ONIGIRI <span className="text-sm font-normal text-stone-500">Admin Operations</span>
-            </h1>
-            <p className="text-xs text-stone-500 mt-0.5">Real-time Orders & Store Inventory / リアルタイム受注・店頭在庫管理</p>
+      {/* 上部ヘッダー ＆ タブバー */}
+      <div className="bg-white border-b border-stone-200 sticky top-0 z-50 shadow-sm">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3.5 flex flex-col sm:flex-row justify-between items-center gap-4">
+          <div className="flex items-center gap-3">
+            <h1 className="text-lg font-bold tracking-tight text-stone-900">ASAKUSA ONIGIRI</h1>
+            <span className="text-[10px] px-2 py-0.5 bg-stone-100 text-stone-600 rounded border border-stone-200 font-semibold uppercase">
+              Admin Console
+            </span>
           </div>
 
           <div className="flex items-center gap-3">
-            {/* LIVEインジケーター */}
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-stone-50 rounded-xl border border-stone-200 text-xs">
-              <span className="relative flex h-2.5 w-2.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-              </span>
-              <span className="font-bold text-emerald-700">LIVE</span>
-              <span className="text-stone-400 text-[10px]">({lastUpdated || 'Syncing'})</span>
+            <div className="flex bg-stone-100 p-1 rounded-xl border border-stone-200">
+              <button
+                onClick={() => setActiveTab('operations')}
+                className={`px-5 py-2 rounded-lg text-xs font-bold transition ${
+                  activeTab === 'operations'
+                    ? 'bg-white text-stone-900 shadow-sm border border-stone-200'
+                    : 'text-stone-500 hover:text-stone-800'
+                }`}
+              >
+                📦 Operations (現場管理)
+              </button>
+              <button
+                onClick={() => setActiveTab('settings')}
+                className={`px-5 py-2 rounded-lg text-xs font-bold transition ${
+                  activeTab === 'settings'
+                    ? 'bg-white text-stone-900 shadow-sm border border-stone-200'
+                    : 'text-stone-500 hover:text-stone-800'
+                }`}
+              >
+                ⚙️ Settings (設定)
+              </button>
             </div>
 
             <button
-              onClick={fetchData}
-              className="px-3.5 py-1.5 bg-stone-900 text-white rounded-xl text-xs font-medium hover:bg-stone-800 transition"
+              onClick={fetchAllData}
+              className="text-xs bg-white hover:bg-stone-50 text-stone-700 px-3 py-2 rounded-xl border border-stone-300 font-semibold flex items-center gap-1 transition shadow-2xs"
             >
-              Refresh / 更新
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              Refresh ({lastUpdated})
             </button>
           </div>
         </div>
+      </div>
 
-        {/* 上段：キッチン製造指示 ＆ 全体サマリー */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="bg-stone-900 text-white p-5 rounded-2xl shadow-sm md:col-span-1">
-            <div className="text-xs text-stone-400 font-medium tracking-wider">
-              KITCHEN SUGGEST <span className="text-[10px] text-stone-500">/ 製造指示</span>
-            </div>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-4xl font-extrabold">{totalSuggestBoxes}</span>
-              <span className="text-stone-300 text-sm">boxes to prepare / 箱</span>
-            </div>
-            <div className="mt-3 pt-3 border-t border-stone-800 text-xs text-stone-300 space-y-1">
-              <div className="flex justify-between">
-                <span>Delivery (Uncooked) / デリバリー未製造:</span>
-                <span className="font-semibold text-amber-300">{pendingDeliveryBoxes} boxes</span>
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
+        
+        {/* =========================================
+            1. OPERATIONS TAB (現場オペレーション画面)
+            ========================================= */}
+        {activeTab === 'operations' && (
+          <div className="space-y-6">
+            
+            {/* 上段3カラムサマリー */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              
+              {/* キッチン製造指示 */}
+              <div className="bg-stone-900 text-white p-5 rounded-2xl shadow-sm space-y-3">
+                <span className="text-[10px] uppercase tracking-wider text-stone-400 font-bold block">
+                  KITCHEN SUGGEST / 製造指示
+                </span>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-4xl font-extrabold text-white">{kitchenSuggestBoxes}</span>
+                  <span className="text-xs text-stone-300">boxes to prepare / 箱</span>
+                </div>
+                <div className="pt-3 border-t border-stone-800 space-y-1 text-[11px] text-stone-300">
+                  <div className="flex justify-between">
+                    <span>Delivery (Uncooked) / デリバリー未製造:</span>
+                    <span className="font-bold text-amber-400">{deliveryUncookedBoxes} boxes</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Store Restock / 店頭補充必要数:</span>
+                    <span className="font-bold text-emerald-400">{storeRestockNeeded} boxes</span>
+                  </div>
+                </div>
               </div>
-              <div className="flex justify-between">
-                <span>Store Restock / 店頭補充必要数:</span>
-                <span className="font-semibold text-white">{storeShortage} boxes</span>
+
+              {/* デリバリー有効受注 */}
+              <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
+                <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold block">
+                  ACTIVE DELIVERY ORDERS / デリバリー有効受注
+                </span>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-3xl font-extrabold text-stone-900">{activeOrders.length}</span>
+                  <span className="text-xs text-stone-500">orders ({activeDeliveryBoxes} boxes)</span>
+                </div>
+                <div className="pt-3 border-t border-stone-100 text-[11px] text-stone-600">
+                  Revenue: <span className="font-bold text-stone-900">¥{deliveryRevenue.toLocaleString()}</span>
+                </div>
               </div>
-            </div>
-          </div>
 
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-stone-200">
-            <div className="text-xs text-stone-500 font-medium">
-              ACTIVE DELIVERY ORDERS <span className="text-[10px] text-stone-400">/ デリバリー有効受注</span>
-            </div>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-3xl font-bold text-stone-900">{activeOrders.length}</span>
-              <span className="text-xs text-stone-500">orders ({totalDeliveryBoxes} boxes)</span>
-            </div>
-            <p className="text-xs text-stone-400 mt-2">Revenue: ¥{(totalDeliveryBoxes * 1800).toLocaleString()}</p>
-          </div>
+              {/* 店頭販売累計 */}
+              <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
+                <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold block">
+                  TAKEOUT SOLD (TODAY) / 店頭販売累計
+                </span>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-3xl font-extrabold text-stone-900">{inventory.sold_count}</span>
+                  <span className="text-xs text-stone-500">boxes sold / 消化</span>
+                </div>
+                <div className="pt-3 border-t border-stone-100 text-[11px] text-stone-600">
+                  Takeout Rev: <span className="font-bold text-stone-900">¥{(inventory.sold_count * (settings.item_price + settings.tax_amount)).toLocaleString()}</span>
+                </div>
+              </div>
 
-          <div className="bg-white p-5 rounded-2xl shadow-sm border border-stone-200">
-            <div className="text-xs text-stone-500 font-medium">
-              TAKEOUT SOLD (TODAY) <span className="text-[10px] text-stone-400">/ 店頭販売累計</span>
             </div>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-3xl font-bold text-emerald-700">{inventory?.sold_count || 0}</span>
-              <span className="text-xs text-stone-500">boxes sold / 消化</span>
-            </div>
-            <p className="text-xs text-stone-400 mt-2">Takeout Rev: ¥{((inventory?.sold_count || 0) * 1800).toLocaleString()}</p>
-          </div>
-        </div>
 
-        {/* 中段：スロット集計 ＆ 店舗在庫コントロール */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
-          <div className="md:col-span-6 bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
-            <h2 className="text-sm font-bold text-stone-900 uppercase tracking-wider mb-4">
-              Delivery by Time Slot <span className="text-xs font-normal text-stone-400">/ 配達枠別 状況</span>
-            </h2>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {slotStats.map((item) => (
-                <div key={item.slot} className="bg-stone-50 p-4 rounded-xl border border-stone-100 text-center">
-                  <span className="text-xs font-semibold px-2.5 py-0.5 bg-stone-200 rounded-full text-stone-800">
-                    {item.slot}
+            {/* 中段：時間枠別状況 ＆ 店頭在庫POS */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              
+              {/* 配達枠別 状況 */}
+              <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
+                <span className="text-xs font-bold text-stone-700 uppercase tracking-wider block">
+                  DELIVERY BY TIME SLOT / 配達枠別 状況
+                </span>
+                <div className="grid grid-cols-4 gap-2">
+                  {['07:00', '08:00', '09:00', '10:00'].map((slot) => (
+                    <div key={slot} className="bg-stone-50 p-3 rounded-xl border border-stone-200 text-center">
+                      <span className="text-[11px] font-bold text-stone-600 block">{slot}</span>
+                      <div className="text-xl font-extrabold text-stone-900 my-1">{slotStats[slot]?.boxes || 0} <span className="text-[10px] font-normal text-stone-500">box</span></div>
+                      <span className="text-[10px] text-stone-400 block">{slotStats[slot]?.orders || 0} orders</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* 店頭在庫 & POS */}
+              <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs font-bold text-stone-700 uppercase tracking-wider">
+                    STORE INVENTORY & POS / 店頭在庫
                   </span>
-                  <div className="mt-3 text-2xl font-bold text-stone-900">
-                    {item.totalBoxes} <span className="text-xs font-normal text-stone-500">box</span>
-                  </div>
-                  <div className="text-[11px] text-stone-400 mt-1">
-                    {item.count} orders
-                  </div>
+                  <span className="text-[11px] text-stone-500">
+                    Target: {inventory.target_stock} boxes
+                  </span>
                 </div>
-              ))}
-            </div>
-          </div>
 
-          {/* 店舗内在庫コントロール */}
-          <div className="md:col-span-6 bg-white p-6 rounded-2xl shadow-sm border border-stone-200 flex flex-col justify-between">
-            <div>
-              <div className="flex justify-between items-center mb-3">
-                <h2 className="text-sm font-bold text-stone-900 uppercase tracking-wider">
-                  Store Inventory & POS <span className="text-xs font-normal text-stone-400">/ 店舗在庫</span>
-                </h2>
-                {isEditingTarget ? (
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="number"
-                      value={tempTargetStock}
-                      onChange={(e) => setTempTargetStock(Number(e.target.value))}
-                      className="w-14 px-2 py-0.5 text-xs border rounded"
-                      min={0}
-                    />
-                    <button
-                      onClick={handleSaveTargetStock}
-                      className="px-2 py-0.5 bg-stone-900 text-white rounded text-xs"
-                    >
-                      Save
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => setIsEditingTarget(true)}
-                    className="text-xs text-stone-500 underline hover:text-stone-900"
-                  >
-                    Target: {inventory?.target_stock} boxes (Edit)
-                  </button>
-                )}
-              </div>
+                <div className="flex items-baseline justify-between bg-stone-50 p-3.5 rounded-xl border border-stone-200">
+                  <span className="text-xs font-bold text-stone-600">TOTAL PHYSICAL SHELF / 店頭総現物</span>
+                  <span className="text-2xl font-extrabold text-stone-900">{inventory.current_stock} <span className="text-xs font-normal text-stone-500">boxes</span></span>
+                </div>
 
-              {/* 店舗総在庫 ＆ 内訳 */}
-              <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 mb-4 space-y-3">
-                <div className="flex justify-between items-baseline">
-                  <div>
-                    <span className="text-xs font-bold text-stone-700 uppercase tracking-wider">Total Physical Shelf</span>
-                    <span className="text-[10px] text-stone-400 ml-2">/ 店頭総現物</span>
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                    <span className="text-[10px] text-emerald-800 font-bold block">Takeout Free / 店頭販売可</span>
+                    <span className="text-lg font-bold text-emerald-900">{takeoutAvailable} boxes</span>
                   </div>
-                  <div className="text-3xl font-extrabold text-stone-900">
-                    {totalStoreStock} <span className="text-xs font-normal text-stone-500">boxes</span>
+                  <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl">
+                    <span className="text-[10px] text-purple-800 font-bold block">Delivery Kept / 店頭確保 (ready_store)</span>
+                    <span className="text-lg font-bold text-purple-900">{deliveryKeptBoxes} boxes</span>
                   </div>
                 </div>
 
-                <div className="pt-2 border-t border-stone-200 grid grid-cols-2 gap-3 text-xs">
-                  <div className="bg-white p-3 rounded-lg border border-emerald-200 shadow-sm">
-                    <div className="text-emerald-800 font-medium text-[11px]">
-                      Takeout Free <span className="text-[10px] text-stone-400">/ 店頭販売可</span>
-                    </div>
-                    <div className="text-2xl font-bold text-emerald-700 mt-0.5">
-                      {takeoutFreeStock} <span className="text-xs font-normal text-stone-500">boxes</span>
-                    </div>
-                  </div>
-                  <div className="bg-white p-3 rounded-lg border border-blue-200 shadow-sm">
-                    <div className="text-blue-800 font-medium text-[11px]">
-                      Delivery Kept <span className="text-[10px] text-stone-400">/ 配達待機</span>
-                    </div>
-                    <div className="text-2xl font-bold text-blue-700 mt-0.5">
-                      {deliveryStoreBoxes} <span className="text-xs font-normal text-stone-500">boxes</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 手動微調整ボタン */}
-                <div className="flex items-center justify-between pt-1">
-                  <span className="text-[11px] text-stone-400">Shelf Adjust / 総現物調整:</span>
+                <div className="flex justify-between items-center pt-2">
+                  <span className="text-xs text-stone-500 font-medium">Shelf Adjust / 総現物調整:</span>
                   <div className="flex gap-2">
-                    <button
-                      onClick={() => handleAdjustStock(-1)}
-                      className="w-7 h-7 bg-white border border-stone-300 rounded-lg font-bold text-xs text-stone-700 hover:bg-stone-100 active:scale-95"
-                    >
-                      -
-                    </button>
-                    <button
-                      onClick={() => handleAdjustStock(1)}
-                      className="w-7 h-7 bg-white border border-stone-300 rounded-lg font-bold text-xs text-stone-700 hover:bg-stone-100 active:scale-95"
-                    >
-                      +
-                    </button>
+                    <button onClick={() => handleShelfChange(-1)} className="w-8 h-8 bg-stone-100 border border-stone-300 rounded-lg font-bold hover:bg-stone-200">-</button>
+                    <button onClick={() => handleShelfChange(1)} className="w-8 h-8 bg-stone-100 border border-stone-300 rounded-lg font-bold hover:bg-stone-200">+</button>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleSellCounter}
+                  className="w-full py-3 bg-emerald-700 hover:bg-emerald-800 active:scale-[0.99] text-white rounded-xl text-xs font-bold transition shadow-sm"
+                >
+                  Sell 1 Box at Counter / 店頭で1箱販売
+                </button>
+              </div>
+
+            </div>
+
+            {/* 下段：デリバリー受注一覧テーブル */}
+            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
+              <span className="text-xs font-bold text-stone-700 uppercase tracking-wider block">
+                DELIVERY ORDERS LIST / デリバリー受注一覧
+              </span>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-stone-700 border-collapse">
+                  <thead>
+                    <tr className="border-b border-stone-200 text-stone-400 uppercase text-[10px]">
+                      <th className="py-2.5 px-3">ID</th>
+                      <th className="py-2.5 px-3">Status</th>
+                      <th className="py-2.5 px-3">Slot</th>
+                      <th className="py-2.5 px-3">Hotel / お届け先</th>
+                      <th className="py-2.5 px-3">Room</th>
+                      <th className="py-2.5 px-3">Guest / お名前</th>
+                      <th className="py-2.5 px-3 text-right">Qty</th>
+                      <th className="py-2.5 px-3 text-right">Total</th>
+                      <th className="py-2.5 px-3 text-center">Action / ステータス変更</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-100">
+                    {orders.map((o) => {
+                      const displayHotel = getHotelDisplayName(o);
+                      const displaySlot = o.delivery_time || o.delivery_slot || o.slot || '08:00';
+                      const displayRoom = o.room_number || o.room || '-';
+                      const displayGuest = o.guest_name || o.name || '-';
+                      const displayEmail = o.contact_email || o.email || '';
+                      const displayQty = o.quantity || o.qty || 1;
+                      const displayTotal = o.total_price || o.price || (displayQty * 1800);
+
+                      const currentStatus = o.status === 'pending' ? 'order_received' : (o.status === 'cooking' ? 'ready_kitchen' : o.status);
+
+                      return (
+                        <tr key={o.id} className="hover:bg-stone-50 transition">
+                          <td className="py-3 px-3 font-mono font-bold text-stone-400 text-[11px]">#{o.id}</td>
+                          <td className="py-3 px-3">
+                            {renderStatusBadge(currentStatus)}
+                          </td>
+                          <td className="py-3 px-3 font-bold text-stone-900">{displaySlot}</td>
+                          <td className="py-3 px-3 font-semibold text-stone-800">{displayHotel}</td>
+                          <td className="py-3 px-3 font-mono text-stone-900 font-bold">{displayRoom}</td>
+                          <td className="py-3 px-3">
+                            <div className="font-semibold text-stone-900">{displayGuest}</div>
+                            {displayEmail && <div className="text-[10px] text-stone-400">{displayEmail}</div>}
+                          </td>
+                          <td className="py-3 px-3 text-right font-bold">{displayQty}</td>
+                          <td className="py-3 px-3 text-right font-bold text-stone-900">¥{displayTotal.toLocaleString()}</td>
+                          <td className="py-3 px-3 text-center">
+                            <select
+                              value={currentStatus}
+                              onChange={(e) => handleUpdateStatus(o.id, e.target.value)}
+                              className="bg-stone-50 border border-stone-300 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-stone-800 outline-none focus:border-stone-900 cursor-pointer"
+                            >
+                              <option value="order_received">1. order received (新規受付 / 未製造)</option>
+                              <option value="ready_store">2-A. ready store (店頭確保・完成)</option>
+                              <option value="ready_kitchen">2-B. ready kitchen (キッチン待機・完成)</option>
+                              <option value="delivering">3. delivering (配達中)</option>
+                              <option value="delivered">4. delivered (配達完了)</option>
+                              <option value="undelivered">5. undelivered (未達・不在)</option>
+                              <option value="cancelled">6. cancelled (キャンセル)</option>
+                            </select>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* =========================================
+            2. SETTINGS TAB (設定コントロールパネル)
+            ========================================= */}
+        {activeTab === 'settings' && (
+          <div className="max-w-3xl mx-auto space-y-6">
+            
+            <div className="flex justify-between items-center">
+              <h2 className="text-xl font-bold text-stone-900">Store Settings & Limits</h2>
+              <button
+                onClick={handleSaveSettings}
+                disabled={isSaving}
+                className="bg-stone-900 hover:bg-stone-800 text-white px-6 py-2.5 rounded-xl text-xs font-bold shadow-sm transition active:scale-95 disabled:bg-stone-400 cursor-pointer"
+              >
+                {isSaving ? 'Saving...' : 'Save All Settings'}
+              </button>
+            </div>
+            
+            {saveMessage && (
+              <div className={`p-3 rounded-xl text-xs font-bold text-center ${saveMessage.includes('Error') ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-800'}`}>
+                {saveMessage}
+              </div>
+            )}
+
+            {/* 1. 全体営業ステータス */}
+            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
+              <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">
+                1. Store Master Status (店舗全体ステータス)
+              </h3>
+              <div className="flex items-center justify-between p-3.5 bg-stone-50 rounded-xl border border-stone-200">
+                <div>
+                  <div className="text-xs font-bold text-stone-900">Accept New Orders (新規受付ON/OFF)</div>
+                  <div className="text-[11px] text-stone-500 mt-0.5">OFFにすると全時間帯が一括で受付終了となり、お客さんの注文を停止します。</div>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                  <input type="checkbox" name="is_open" checked={settings.is_open} onChange={handleSettingChange} className="sr-only peer" />
+                  <div className="w-11 h-6 bg-stone-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-stone-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                </label>
+              </div>
+            </div>
+
+            {/* 2. 料金設定 */}
+            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
+              <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">
+                2. Price & Taxes (料金設定)
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Item Price (本体価格 /箱)</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500 text-xs">¥</span>
+                    <input type="number" name="item_price" value={settings.item_price} onChange={handleSettingChange} className="w-full pl-7 pr-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-bold outline-none focus:border-stone-900" />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Delivery Fee (配達料 /注文)</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500 text-xs">¥</span>
+                    <input type="number" name="delivery_fee" value={settings.delivery_fee} onChange={handleSettingChange} className="w-full pl-7 pr-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-bold outline-none focus:border-stone-900" />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Tax Amount (諸税 /箱)</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500 text-xs">¥</span>
+                    <input type="number" name="tax_amount" value={settings.tax_amount} onChange={handleSettingChange} className="w-full pl-7 pr-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-bold outline-none focus:border-stone-900" />
                   </div>
                 </div>
               </div>
             </div>
 
-            <button
-              onClick={handleSellOne}
-              disabled={takeoutFreeStock <= 0}
-              className="w-full py-3.5 bg-emerald-700 hover:bg-emerald-800 disabled:bg-stone-300 text-white font-bold rounded-xl text-sm transition shadow-sm active:scale-[0.99]"
-            >
-              Sell 1 Box at Counter / 店頭で1箱販売
-            </button>
+            {/* 3. 配達エリア設定 */}
+            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
+              <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">
+                3. Delivery Coverage (配達可能エリア)
+              </h3>
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="text-[11px] font-bold text-stone-600">Delivery Radius (配達半径 km)</label>
+                  <span className="font-extrabold text-sm text-stone-900">{Number(settings.delivery_radius_km).toFixed(1)} km</span>
+                </div>
+                <input type="range" name="delivery_radius_km" min="1.0" max="5.0" step="0.1" value={settings.delivery_radius_km} onChange={handleSettingChange} className="w-full accent-stone-900" />
+                <p className="text-[10px] text-stone-400 mt-1">※半径を変更すると、フロント画面のホテル選択一覧が自動で絞り込まれます。</p>
+              </div>
+            </div>
+
+            {/* 4. 時間枠・上限設定 */}
+            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
+              <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">
+                4. Time Slot Capacity & Control (時間枠の受付上限 ＆ 強制停止)
+              </h3>
+              <p className="text-[10px] text-stone-400">スイッチをOFFにすると、上限に達していなくても即座に「SOLD OUT」にできます。</p>
+              
+              <div className="space-y-2.5">
+                {['0700', '0800', '0900', '1000'].map((slot) => (
+                  <div key={slot} className={`flex items-center justify-between p-3 rounded-xl border transition ${settings[`slot_${slot}_active` as keyof typeof settings] ? 'bg-stone-50 border-stone-200' : 'bg-rose-50/40 border-rose-200'}`}>
+                    <div className="flex items-center gap-3">
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" name={`slot_${slot}_active`} checked={Boolean(settings[`slot_${slot}_active` as keyof typeof settings])} onChange={handleSettingChange} className="sr-only peer" />
+                        <div className="w-9 h-5 bg-stone-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-stone-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-600"></div>
+                      </label>
+                      <span className={`text-xs font-bold ${settings[`slot_${slot}_active` as keyof typeof settings] ? 'text-stone-900' : 'text-stone-400 line-through'}`}>
+                        {slot.slice(0, 2)}:{slot.slice(2)} Delivery Slot
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-stone-500">Max:</span>
+                      <input type="number" name={`limit_${slot}`} value={Number(settings[`limit_${slot}` as keyof typeof settings])} onChange={handleSettingChange} className="w-16 px-2 py-1 bg-white border border-stone-300 rounded-lg text-xs font-bold outline-none focus:border-stone-900 text-center" />
+                      <span className="text-[10px] text-stone-400">boxes</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
           </div>
-        </div>
-
-        {/* 下段：受注一覧（日英バイリンガル表） */}
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
-          <h2 className="text-sm font-bold text-stone-900 uppercase tracking-wider mb-4">
-            Delivery Orders List <span className="text-xs font-normal text-stone-400">/ デリバリー受注一覧</span>
-          </h2>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="border-b border-stone-200 text-stone-400 uppercase tracking-wider">
-                <tr>
-                  <th className="pb-3">Status & Location / 状態・所在</th>
-                  <th className="pb-3">Order ID / 時刻</th>
-                  <th className="pb-3">Time Slot / 配達枠</th>
-                  <th className="pb-3">Area / エリア</th>
-                  <th className="pb-3">Hotel & Room / 部屋番号</th>
-                  <th className="pb-3">Guest Name / 宿泊者</th>
-                  <th className="pb-3 text-right">Qty / 数量</th>
-                  <th className="pb-3 text-right">Total / 金額</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-stone-100">
-                {orders.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="py-8 text-center text-stone-400">
-                      No active orders found / 受注データはありません
-                    </td>
-                  </tr>
-                ) : (
-                  orders.map((order) => {
-                    const currentStatus = order.status || 'pending';
-                    const config = STATUS_CONFIG[currentStatus] || STATUS_CONFIG.pending;
-
-                    const displayHotelName =
-                      order.hotels?.name_ja ||
-                      order.hotels?.name ||
-                      order.hotel_name ||
-                      order.hotel ||
-                      `Hotel ID: ${order.hotel_id || 'N/A'}`;
-
-                    const areaTag = resolveArea(order);
-
-                    return (
-                      <tr
-                        key={order.id}
-                        className={`hover:bg-stone-50/50 transition ${
-                          currentStatus === 'cancelled' ? 'opacity-40 bg-stone-50' : ''
-                        }`}
-                      >
-                        <td className="py-3">
-                          <select
-                            value={currentStatus}
-                            onChange={(e) => openStatusModal(order, e.target.value)}
-                            className={`px-2.5 py-1.5 text-xs font-semibold rounded-lg border outline-none cursor-pointer ${config.color}`}
-                          >
-                            <option value="pending">🟡 Received / 受注済</option>
-                            <option value="ready_kitchen">🟠 Ready (Kitchen) / 調理済</option>
-                            <option value="ready_store">🔵 Ready (Store) / 店舗待機</option>
-                            <option value="delivering">🟣 Delivering / 配達中</option>
-                            <option value="delivered">🟢 Delivered / 完了</option>
-                            <option value="cancelled">⚪ Cancelled / 取消</option>
-                          </select>
-                          <div className="text-[10px] text-stone-500 mt-0.5 pl-1 font-medium">
-                            {config.location}
-                          </div>
-                        </td>
-
-                        <td className="py-3 text-stone-500">
-                          #{order.id}
-                          <div className="text-[10px] text-stone-400">
-                            {new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </div>
-                        </td>
-
-                        <td className="py-3">
-                          <span className="font-semibold bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 rounded-md">
-                            {order.delivery_time || order.delivery_slot || 'N/A'}
-                          </span>
-                        </td>
-
-                        <td className="py-3">
-                          <span className="inline-block px-2.5 py-1 text-[11px] font-semibold bg-stone-100 text-stone-700 rounded-md border border-stone-300 whitespace-nowrap">
-                            {areaTag}
-                          </span>
-                        </td>
-
-                        <td className="py-3">
-                          <div className="font-medium text-stone-900">{displayHotelName}</div>
-                          <div className="text-stone-500 text-[11px] mt-0.5">
-                            Room: <span className="font-semibold text-stone-700">{order.room_number}</span>
-                          </div>
-                        </td>
-
-                        <td className="py-3">
-                          <div className="font-medium text-stone-900">
-                            {order.guest_name || order.name || 'Guest'}
-                          </div>
-                          <div className="text-stone-400 text-[10px]">{order.contact_email || order.email}</div>
-                        </td>
-
-                        <td className="py-3 text-right font-semibold text-stone-900">{order.quantity} box</td>
-                        <td className="py-3 text-right font-medium text-stone-900">
-                          ¥{(order.quantity * 1800).toLocaleString()}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        )}
 
       </div>
     </div>
