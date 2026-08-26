@@ -1,250 +1,220 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabase';
+import { sanitizeRoomNumber, sanitizeEmail, sanitizeName } from '@/utils/sanitize';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-);
+type Hotel = {
+  id: number;
+  name_en: string;
+  name_ja: string;
+  reception_type: string;
+};
 
-// 浅草の主要ホテル初期リスト
-const INITIAL_HOTELS = [
-  { id: 1, name: "Sakura Hostel Asakusa (サクラホステル浅草)" },
-  { id: 2, name: "Richmond Hotel Premier Asakusa (リッチモンドホテルプレミア浅草)" },
-  { id: 3, name: "Richmond Hotel Asakusa (リッチモンドホテル浅草)" },
-  { id: 4, name: "Onyado Nono Asakusa Hot Springs (天然温泉 凌雲の湯 御宿 野乃 浅草)" },
-  { id: 5, name: "Onyado Nono Asakusa Bettei (天然温泉 凌雲の湯 御宿 野乃 浅草別邸)" },
-  { id: 6, name: "Asakusa View Hotel Annex Rokku (浅草ビューホテル アネックス 六区)" },
-  { id: 7, name: "Hotel Keihan Asakusa (ホテル京阪 浅草)" },
-  { id: 8, name: "Asakusa View Hotel (浅草ビューホテル)" },
-  { id: 9, name: "Hotel Tavinos Asakusa (ホテルタビノス浅草)" },
-  { id: 10, name: "THE KANZASHI TOKYO ASAKUSA (ザ カンザシ 東京浅草)" },
-  { id: 11, name: "TOSEI HOTEL COCONE ASAKUSA (トーセイホテル ココネ浅草)" },
-  { id: 12, name: "Smile Hotel Asakusa (スマイルホテル浅草)" },
-  { id: 13, name: "MUSTARD HOTEL ASAKUSA 1 (マスタードホテル浅草1)" },
-  { id: 14, name: "MUSTARD HOTEL ASAKUSA 2 (マスタードホテル浅草2)" },
-  { id: 15, name: "Dormy Inn Express Asakusa (展望大浴場 あさひ湯 ドーミーインEXPRESS浅草)" },
-  { id: 16, name: "THE GATE HOTEL Asakusa Kaminarimon by HULIC (ザ・ゲートホテル雷門 by HULIC)" }
-];
-
-export default function Home() {
-  const [hotels, setHotels] = useState(INITIAL_HOTELS);
-  const [hotelId, setHotelId] = useState<string>('1');
+export default function OrderPage() {
+  const [hotels, setHotels] = useState<Hotel[]>([]);
+  const [selectedHotel, setSelectedHotel] = useState<string>('');
   const [roomNumber, setRoomNumber] = useState('');
-  const [deliverySlot, setDeliverySlot] = useState('08:00 AM');
-  const [guestName, setGuestName] = useState('');
-  const [contactEmail, setContactEmail] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [email, setEmail] = useState('');
+  const [slot, setSlot] = useState('10:00');
   const [quantity, setQuantity] = useState(1);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [success, setSuccess] = useState(false);
-  const [errorMsg, setErrorMsg] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
 
-  const unitPrice = 1800;
+  // 1セットの価格（円）
+  const PRICE_PER_SET = 1800;
 
   useEffect(() => {
-    const fetchHotels = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('hotels')
-          .select('*')
-          .order('id', { ascending: true });
+    // アクティブなホテル一覧を取得（A-Zソート）
+    async function fetchHotels() {
+      const { data, error } = await supabase
+        .from('hotels')
+        .select('id, name_en, name_ja, reception_type')
+        .eq('is_active', true)
+        .order('name_en', { ascending: true });
 
-        if (data && data.length > 0) {
-          const formatted = data.map((h: any) => ({
-            id: h.id,
-            name: h.name || h.hotel_name || `${h.name_en || ''} (${h.name_ja || ''})`.trim()
-          }));
-          setHotels(formatted);
-          setHotelId(formatted[0].id.toString());
-        }
-      } catch (e) {
-        console.error('ホテル一覧取得:', e);
+      if (data && !error) {
+        setHotels(data);
+        if (data.length > 0) setSelectedHotel(data[0].id.toString());
       }
-    };
+    }
     fetchHotels();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsSubmitting(true);
-    setErrorMsg('');
-    setSuccess(false);
+    setLoading(true);
+    setMessage('');
 
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      const { error } = await supabase.from('orders').insert([
-        {
-          order_date: today,
-          delivery_slot: deliverySlot,
-          hotel_id: parseInt(hotelId) || 1,
-          room_number: roomNumber,
-          guest_name: guestName,
-          contact_email: contactEmail,
-          quantity: quantity,
-          total_price: quantity * unitPrice,
-        },
-      ]);
+    // 入力値の自動整形（サニタイズ）
+    const cleanFirstName = sanitizeName(firstName);
+    const cleanLastName = sanitizeName(lastName);
+    const cleanFullName = `${cleanFirstName} ${cleanLastName}`.trim();
+    const cleanRoom = sanitizeRoomNumber(roomNumber);
+    const cleanEmail = sanitizeEmail(email);
 
-      if (error) throw error;
+    // 注文データをsupabaseに登録 (Stripe決済前の動作検証用)
+    const { error } = await supabase.from('orders').insert([
+      {
+        hotel_id: parseInt(selectedHotel),
+        room_number: cleanRoom,
+        guest_name: cleanFullName,
+        email: cleanEmail,
+        delivery_slot: slot,
+        quantity: quantity,
+        total_price: quantity * PRICE_PER_SET,
+        status: 'paid', // 決済連携前のため一旦paidで記録
+      },
+    ]);
 
-      setSuccess(true);
+    setLoading(false);
+    if (error) {
+      setMessage('Error: ' + error.message);
+    } else {
+      setMessage('Order submitted successfully!');
       setRoomNumber('');
-      setGuestName('');
-      setContactEmail('');
+      setFirstName('');
+      setLastName('');
+      setEmail('');
       setQuantity(1);
-    } catch (err: any) {
-      setErrorMsg(err.message || '注文の送信に失敗しました。');
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
   return (
-    <main className="min-h-screen py-10 px-4 flex flex-col items-center">
-      <div className="w-full max-w-lg bg-white rounded-2xl border border-[#e5e0d8] shadow-sm p-6 sm:p-8">
-        <div className="text-center mb-6">
-          <h1 className="text-2xl font-bold tracking-tight text-[#2d2926]">
-            浅草おにぎりデリバリー
-          </h1>
-          <p className="text-xs text-gray-500 mt-1 uppercase tracking-widest">
-            Artisanal Tokyo Onigiri Breakfast Box
-          </p>
+    <main className="max-w-md mx-auto p-6 bg-stone-50 min-h-screen text-stone-900">
+      <div className="text-center mb-8">
+        <h1 className="text-2xl font-serif font-bold tracking-wide">ASAKUSA ONIGIRI</h1>
+        <p className="text-xs text-stone-500 tracking-widest mt-1">BREAKFAST DELIVERY</p>
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-4 bg-white p-5 rounded-lg border border-stone-200 shadow-sm">
+        <div>
+          <label className="block text-xs font-medium text-stone-600 mb-1">
+            Delivery Hotel
+          </label>
+          <select
+            value={selectedHotel}
+            onChange={(e) => setSelectedHotel(e.target.value)}
+            className="w-full border border-stone-300 rounded p-2 text-sm bg-white"
+          >
+            {hotels.map((hotel) => (
+              <option key={hotel.id} value={hotel.id}>
+                {hotel.name_en} ({hotel.name_ja})
+              </option>
+            ))}
+          </select>
         </div>
 
-        {/* メニュー案内 */}
-        <div className="bg-[#faf9f6] border border-[#e5e0d8] rounded-xl p-4 mb-6">
-          <h2 className="text-xs font-bold text-[#8c7355] uppercase tracking-wider mb-2">
-            TODAY'S 4 FLAVORS BOX (¥1,800)
-          </h2>
-          <ul className="text-xs space-y-1 text-gray-700">
-            <li>• Grilled Salmon (秋鮭塩焼き)</li>
-            <li>• Kishu Umeboshi (紀州南高梅)</li>
-            <li>• Spicy Takana (辛子高菜)</li>
-            <li>• Spicy Cod Roe (博多明太子)</li>
-          </ul>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs font-bold text-gray-600 mb-1">
-              Delivery Hotel
-            </label>
-            <select
-              value={hotelId}
-              onChange={(e) => setHotelId(e.target.value)}
-              className="w-full px-3 py-2.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#8c7355] bg-white"
-              required
-            >
-              {hotels.map((h) => (
-                <option key={h.id} value={h.id}>
-                  {h.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-gray-600 mb-1">
-                Room Number
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. 502"
-                value={roomNumber}
-                onChange={(e) => setRoomNumber(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#8c7355]"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-600 mb-1">
-                Delivery Slot
-              </label>
-              <select
-                value={deliverySlot}
-                onChange={(e) => setDeliverySlot(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#8c7355] bg-white"
-              >
-                <option value="07:00 AM">07:00 AM</option>
-                <option value="08:00 AM">08:00 AM</option>
-                <option value="09:00 AM">09:00 AM</option>
-                <option value="10:00 AM">10:00 AM</option>
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-gray-600 mb-1">
-              Guest Full Name
+            <label className="block text-xs font-medium text-stone-600 mb-1">
+              Room Number
             </label>
             <input
               type="text"
-              placeholder="John Doe"
-              value={guestName}
-              onChange={(e) => setGuestName(e.target.value)}
-              className="w-full px-3 py-2.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#8c7355]"
+              placeholder="e.g. 502"
+              value={roomNumber}
+              onChange={(e) => setRoomNumber(e.target.value)}
+              className="w-full border border-stone-300 rounded p-2 text-sm"
               required
             />
           </div>
-
           <div>
-            <label className="block text-xs font-bold text-gray-600 mb-1">
-              Contact Email
+            <label className="block text-xs font-medium text-stone-600 mb-1">
+              Delivery Slot
+            </label>
+            <select
+              value={slot}
+              onChange={(e) => setSlot(e.target.value)}
+              className="w-full border border-stone-300 rounded p-2 text-sm bg-white"
+            >
+              <option value="07:00">07:00 AM</option>
+              <option value="08:00">08:00 AM</option>
+              <option value="09:00">09:00 AM</option>
+              <option value="10:00">10:00 AM</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-stone-600 mb-1">
+              First Name
             </label>
             <input
-              type="email"
-              placeholder="john@example.com"
-              value={contactEmail}
-              onChange={(e) => setContactEmail(e.target.value)}
-              className="w-full px-3 py-2.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#8c7355]"
+              type="text"
+              placeholder="John"
+              value={firstName}
+              onChange={(e) => setFirstName(e.target.value)}
+              className="w-full border border-stone-300 rounded p-2 text-sm"
               required
             />
           </div>
-
           <div>
-            <label className="block text-xs font-bold text-gray-600 mb-1">
-              Quantity (Boxes)
+            <label className="block text-xs font-medium text-stone-600 mb-1">
+              Last Name
             </label>
-            <div className="flex items-center gap-4">
-              <input
-                type="number"
-                min="1"
-                max="10"
-                value={quantity}
-                onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
-                className="w-24 px-3 py-2.5 rounded-lg border border-gray-300 text-sm text-center font-bold focus:outline-none focus:ring-2 focus:ring-[#8c7355]"
-              />
-              <span className="font-bold text-base text-[#2d2926]">
-                Total: ¥{(quantity * unitPrice).toLocaleString()}
-              </span>
-            </div>
+            <input
+              type="text"
+              placeholder="Smith"
+              value={lastName}
+              onChange={(e) => setLastName(e.target.value)}
+              className="w-full border border-stone-300 rounded p-2 text-sm"
+              required
+            />
           </div>
+        </div>
 
-          {errorMsg && (
-            <div className="p-3 bg-red-50 text-red-600 text-xs rounded-lg border border-red-200">
-              {errorMsg}
-            </div>
-          )}
+        <div>
+          <label className="block text-xs font-medium text-stone-600 mb-1">
+            Contact Email
+          </label>
+          <input
+            type="email"
+            placeholder="john@example.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full border border-stone-300 rounded p-2 text-sm"
+            required
+          />
+        </div>
 
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className="w-full mt-2 bg-[#2d2926] text-white py-3.5 rounded-xl font-bold text-sm hover:bg-black transition-colors disabled:bg-gray-400 cursor-pointer"
-          >
-            {isSubmitting
-              ? 'Processing...'
-              : `Place Order (¥${(quantity * unitPrice).toLocaleString()})`}
-          </button>
-        </form>
+        <div>
+          <label className="block text-xs font-medium text-stone-600 mb-1">
+            Quantity (Boxes)
+          </label>
+          <div className="flex items-center gap-3">
+            <input
+              type="number"
+              min="1"
+              max="10"
+              value={quantity}
+              onChange={(e) => setQuantity(parseInt(e.target.value))}
+              className="w-20 border border-stone-300 rounded p-2 text-sm"
+              required
+            />
+            <span className="text-sm font-medium text-stone-700">
+              Total: ¥{(quantity * PRICE_PER_SET).toLocaleString()}
+            </span>
+          </div>
+        </div>
 
-        {success && (
-          <div className="mt-4 p-3 bg-green-50 text-green-700 text-xs rounded-lg border border-green-200 text-center font-medium">
-            Order placed successfully! We are preparing your breakfast.
+        {message && (
+          <div className="p-3 bg-stone-100 text-xs rounded border border-stone-300 text-stone-800">
+            {message}
           </div>
         )}
-      </div>
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full bg-stone-900 text-white font-medium py-3 rounded hover:bg-stone-800 transition-colors disabled:opacity-50 text-sm mt-2"
+        >
+          {loading ? 'Processing...' : `Place Order (¥${(quantity * PRICE_PER_SET).toLocaleString()})`}
+        </button>
+      </form>
     </main>
   );
 }

@@ -225,11 +225,11 @@ export default function AdminPage() {
                           </div>
                         </td>
                         <td className="px-6 py-4">
-                          <div className="font-medium text-neutral-900">{order.guest_name}</div>
-                          {order.contact_email && (
-                            <div className="text-xs text-neutral-400">{order.contact_email}</div>
-                          )}
-                        </td>
+            <div className="font-medium text-neutral-900">{order.guest_name}</div>
+            {(order.email || order.contact_email) && (
+              <div className="text-xs text-neutral-400">{order.email || order.contact_email}</div>
+            )}
+          </td>
                         <td className="px-6 py-4 font-semibold text-neutral-900">
                           {order.quantity} 箱
                         </td>

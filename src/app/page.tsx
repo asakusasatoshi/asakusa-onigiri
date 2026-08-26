@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
+import { sanitizeRoomNumber, sanitizeEmail, sanitizeName } from '@/utils/sanitize';
 
 type Hotel = {
   id: number;
@@ -14,7 +15,8 @@ export default function OrderPage() {
   const [hotels, setHotels] = useState<Hotel[]>([]);
   const [selectedHotel, setSelectedHotel] = useState<string>('');
   const [roomNumber, setRoomNumber] = useState('');
-  const [guestName, setGuestName] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [slot, setSlot] = useState('10:00');
   const [quantity, setQuantity] = useState(1);
@@ -30,8 +32,8 @@ export default function OrderPage() {
       const { data, error } = await supabase
         .from('hotels')
         .select('id, name_en, name_ja, reception_type')
-        .eq('is_active', true);
-
+        .eq('is_active', true)
+        .order('name_en', { ascending: true });
       if (data && !error) {
         setHotels(data);
         if (data.length > 0) setSelectedHotel(data[0].id.toString());
@@ -45,13 +47,20 @@ export default function OrderPage() {
     setLoading(true);
     setMessage('');
 
-    // 注文データをSupabaseに登録（Stripe決済前の動作検証用）
+    // 入力値の自動整形（サニタイズ）
+    const cleanFirstName = sanitizeName(firstName);
+    const cleanLastName = sanitizeName(lastName);
+    const cleanFullName = `${cleanFirstName} ${cleanLastName}`.trim();
+    const cleanRoom = sanitizeRoomNumber(roomNumber);
+    const cleanEmail = sanitizeEmail(email);
+
+    // 注文データをsupabaseに登録 (Stripe決済前の動作検証用)
     const { error } = await supabase.from('orders').insert([
       {
         hotel_id: parseInt(selectedHotel),
-        room_number: roomNumber,
-        guest_name: guestName,
-        email: email,
+        room_number: cleanRoom,
+        guest_name: cleanFullName,
+        email: cleanEmail,
         delivery_slot: slot,
         quantity: quantity,
         total_price: quantity * PRICE_PER_SET,
@@ -148,18 +157,33 @@ export default function OrderPage() {
           </div>
         </div>
 
-        <div>
-          <label className="block text-xs font-medium text-stone-600 mb-1">
-            Guest Full Name
-          </label>
-          <input
-            type="text"
-            placeholder="John Doe"
-            value={guestName}
-            onChange={(e) => setGuestName(e.target.value)}
-            className="w-full border border-stone-300 rounded p-2 text-sm"
-            required
-          />
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-stone-600 mb-1">
+              First Name
+            </label>
+            <input
+              type="text"
+              placeholder="John"
+              value={firstName}
+              onChange={(e) => setFirstName(e.target.value)}
+              className="w-full border border-stone-300 rounded p-2 text-sm"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-600 mb-1">
+              Last Name
+            </label>
+            <input
+              type="text"
+              placeholder="Smith"
+              value={lastName}
+              onChange={(e) => setLastName(e.target.value)}
+              className="w-full border border-stone-300 rounded p-2 text-sm"
+              required
+            />
+          </div>
         </div>
 
         <div>
