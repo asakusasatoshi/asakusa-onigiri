@@ -49,7 +49,6 @@ export default function OrderPage() {
       groups[hotel.area].push(hotel);
     });
 
-    // 各エリア内をアルファベット順 (A-Z) にソート
     Object.keys(groups).forEach((area) => {
       groups[area].sort((a, b) => a.name.localeCompare(b.name));
     });
@@ -57,7 +56,7 @@ export default function OrderPage() {
     return groups;
   }, []);
 
-  // ツインピンマップHTML
+  // 英語表記マップHTML（ピンポップアップも英語住所）
   const mapHtml = useMemo(() => {
     const centerLat = selectedHotel ? selectedHotel.lat : (userLocation ? userLocation.lat : 35.7147);
     const centerLng = selectedHotel ? selectedHotel.lng : (userLocation ? userLocation.lng : 139.7967);
@@ -71,7 +70,7 @@ export default function OrderPage() {
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <style>
-          body, html, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #f5f5f4; font-family: sans-serif; }
+          body, html, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #f5f5f4; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
           .user-pulse {
             width: 14px; height: 14px; background: #2563eb; border-radius: 50%;
             border: 2px solid #ffffff; box-shadow: 0 0 10px rgba(37,99,235,0.6);
@@ -87,9 +86,11 @@ export default function OrderPage() {
       <body>
         <div id="map"></div>
         <script>
-          var map = L.map('map', { zoomControl: false }).setView([${centerLat}, ${centerLng}], 16);
-          L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-            maxZoom: 19
+          var map = L.map('map', { zoomControl: false }).setView([${centerLat},${centerLng}], 16);
+          
+          L.tileLayer('https://mt1.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}', {
+            maxZoom: 20,
+            attribution: '&copy; Google Maps'
           }).addTo(map);
 
           var bounds = [];
@@ -98,7 +99,7 @@ export default function OrderPage() {
             var userIcon = L.divIcon({ className: 'user-pulse', iconSize: [14, 14], iconAnchor: [7, 7] });
             L.marker([${userLocation.lat}, ${userLocation.lng}], { icon: userIcon })
               .addTo(map)
-              .bindPopup("<b>📍 You are here / 現在地</b>")
+              .bindPopup("<b>📍 You are here</b>")
               .openPopup();
             bounds.push([${userLocation.lat}, ${userLocation.lng}]);
           ` : ''}
@@ -106,7 +107,7 @@ export default function OrderPage() {
           ${selectedHotel ? `
             var hotelMarker = L.marker([${selectedHotel.lat}, ${selectedHotel.lng}])
               .addTo(map)
-              .bindPopup("<b>🏨 ${selectedHotel.name}</b><br><span style='font-size:11px;'>${selectedHotel.address}</span>");
+              .bindPopup("<b>🏨 ${selectedHotel.name}</b><br><span style='font-size:11px; color:#555;'>${selectedHotel.addressEn || selectedHotel.address}</span>");
             ${!userLocation ? 'hotelMarker.openPopup();' : ''}
             bounds.push([${selectedHotel.lat}, ${selectedHotel.lng}]);
           ` : ''}
@@ -154,9 +155,9 @@ export default function OrderPage() {
         setIsLocating(false);
 
         if (minDistance < 300) {
-          setGpsNote(`📍 Auto-detected: You are near ${closestHotel.name} (approx. ${minDistance}m)`);
+          setGpsNote(`📍 Auto-detected: You are near ${closestHotel.name} (approx.${minDistance}m)`);
         } else {
-          setGpsNote(`📍 Nearest hotel: ${closestHotel.name} (approx. ${minDistance}m)`);
+          setGpsNote(`📍 Nearest hotel: ${closestHotel.name} (approx.${minDistance}m)`);
         }
       },
       () => {
@@ -189,7 +190,7 @@ export default function OrderPage() {
     setIsSubmitting(true);
     setErrorMessage('');
 
-    const fullName = `${firstName.trim()} ${lastName.trim()}`;
+    const fullName = `${firstName.trim()}${lastName.trim()}`;
 
     try {
       const orderPayload = {
@@ -293,7 +294,7 @@ export default function OrderPage() {
         {/* 注文フォーム */}
         <form onSubmit={handleSubmit} className="bg-white border border-stone-200 rounded-3xl p-6 sm:p-8 space-y-6 shadow-sm">
           
-          {/* ホテル選択 ＆ ツインピンマップ */}
+          {/* ホテル選択 ＆ 英語ツインピンマップ */}
           <div className="space-y-3">
             <div className="flex justify-between items-center">
               <label className="text-xs font-bold tracking-wider text-stone-700 uppercase">
@@ -315,7 +316,7 @@ export default function OrderPage() {
               </div>
             )}
 
-            {/* ツインピンマップ表示 */}
+            {/* 英語表記ツインピンマップ */}
             <div className="rounded-2xl overflow-hidden border border-stone-200 bg-stone-100 relative shadow-inner">
               <iframe
                 title="Interactive Hotel Map"
@@ -341,7 +342,6 @@ export default function OrderPage() {
               </div>
             </div>
 
-            {/* エリア別グループ化 ＆ A-Z順ソート */}
             <select
               value={selectedHotelId}
               onChange={(e) => {
@@ -379,7 +379,7 @@ export default function OrderPage() {
             />
           </div>
 
-          {/* 宿泊者名（First Name / Last Name） */}
+          {/* 宿泊者名 */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label className="text-xs font-bold tracking-wider text-stone-700 uppercase">
