@@ -38,6 +38,9 @@ export default function OrderPage() {
   const [gpsNote, setGpsNote] = useState<string>('');
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
 
+  // カレンダー定休日フラグ (true: 営業, false: 定休)
+  const [isTodayOpenInCalendar, setIsTodayOpenInCalendar] = useState<boolean>(true);
+
   // Settings
   const [settings, setSettings] = useState({
     item_price: 1500,
@@ -65,7 +68,22 @@ export default function OrderPage() {
   });
 
   const fetchSettingsAndAvailability = useCallback(async () => {
-    // 1. Settings 取得
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    // 1. カレンダーから今日の営業状態を取得
+    const { data: todayCal } = await supabase
+      .from('store_calendar')
+      .select('is_open')
+      .eq('date', todayStr)
+      .maybeSingle();
+
+    if (todayCal !== null && todayCal !== undefined) {
+      setIsTodayOpenInCalendar(todayCal.is_open);
+    } else {
+      setIsTodayOpenInCalendar(true); // 未設定の日はデフォルト営業
+    }
+
+    // 2. Settings 取得
     const { data: setData } = await supabase
       .from('settings')
       .select('*')
@@ -76,7 +94,7 @@ export default function OrderPage() {
       setSettings(setData);
     }
 
-    // 2. 有効注文の集計
+    // 3. 有効注文の集計
     const { data: orderData } = await supabase
       .from('orders')
       .select('delivery_time, quantity, status')
@@ -322,8 +340,8 @@ export default function OrderPage() {
     }
   };
 
-  // 全体受付停止時
-  if (!settings.is_open) {
+  // 1. カレンダー定休日 または 2. 設定の緊急停止スイッチがOFFの場合
+  if (!isTodayOpenInCalendar || !settings.is_open) {
     return (
       <div className="min-h-screen bg-[#faf8f5] text-stone-800 flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-white border border-stone-200 rounded-3xl p-8 text-center space-y-5 shadow-sm">
@@ -331,11 +349,17 @@ export default function OrderPage() {
             ✕
           </div>
           <div className="space-y-2">
-            <h1 className="text-2xl font-bold tracking-tight text-stone-900">Today's Orders Closed</h1>
+            <h1 className="text-2xl font-bold tracking-tight text-stone-900">
+              {!isTodayOpenInCalendar ? 'Store Closed Today' : "Today's Orders Closed"}
+            </h1>
             <p className="text-xs text-stone-600 leading-relaxed">
-              Today's breakfast orders are fully booked or closed. Thank you for your interest!
+              {!isTodayOpenInCalendar
+                ? 'We are closed today according to our business calendar. Please check back on our next open day!'
+                : "Today's breakfast orders are currently paused or fully booked. Thank you for your interest!"}
             </p>
-            <p className="text-[11px] text-stone-400">本日分の朝食受付は終了いたしました。</p>
+            <p className="text-[11px] text-stone-400">
+              {!isTodayOpenInCalendar ? '本日は定休日のため注文を受け付けておりません。' : '本日分の朝食受付は終了いたしました。'}
+            </p>
           </div>
         </div>
       </div>
@@ -568,7 +592,7 @@ export default function OrderPage() {
             />
           </div>
 
-          {/* 6. 配達時間枠（SOLD OUT完全対応版） */}
+          {/* 6. 配達時間枠 */}
           <div className="space-y-2">
             <div className="flex justify-between items-center">
               <label className="text-xs font-bold tracking-wider text-stone-700 uppercase">
@@ -617,7 +641,7 @@ export default function OrderPage() {
             </div>
           </div>
 
-          {/* 7. 数量選択 & リアルタイム明細内訳 */}
+          {/* 7. 数量選択 & 明細内訳 */}
           <div className="pt-4 border-t border-stone-200 space-y-4">
             <div className="flex items-center justify-between">
               <div>
@@ -651,7 +675,6 @@ export default function OrderPage() {
               </div>
             </div>
 
-            {/* 明瞭な料金内訳 */}
             <div className="bg-stone-50 p-4 rounded-2xl border border-stone-200 space-y-2 text-xs">
               <div className="flex justify-between text-stone-600">
                 <span>Onigiri Bento Box (¥{settings.item_price.toLocaleString()} × {quantity})</span>

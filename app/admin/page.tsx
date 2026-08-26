@@ -34,8 +34,14 @@ interface StoreInventory {
   sold_count: number;
 }
 
+interface CalendarDay {
+  date: string;
+  is_open: boolean;
+  note?: string;
+}
+
 export default function AdminDashboard() {
-  const [activeTab, setActiveTab] = useState<'operations' | 'settings'>('operations');
+  const [activeTab, setActiveTab] = useState<'operations' | 'calendar' | 'settings'>('operations');
   const [orders, setOrders] = useState<Order[]>([]);
   const [inventory, setInventory] = useState<StoreInventory>({
     target_date: new Date().toISOString().split('T')[0],
@@ -45,6 +51,13 @@ export default function AdminDashboard() {
   });
   const [isLoading, setIsLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string>('');
+
+  // === Calendar State ===
+  const [currentYearMonth, setCurrentYearMonth] = useState(() => {
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() };
+  });
+  const [calendarData, setCalendarData] = useState<Record<string, CalendarDay>>({});
 
   // === Settings State ===
   const [settings, setSettings] = useState({
@@ -97,6 +110,16 @@ export default function AdminDashboard() {
       .maybeSingle();
     if (setData) setSettings(setData);
 
+    // 4. Calendar
+    const { data: calData } = await supabase.from('store_calendar').select('*');
+    if (calData) {
+      const calMap: Record<string, CalendarDay> = {};
+      calData.forEach((row: CalendarDay) => {
+        calMap[row.date] = row;
+      });
+      setCalendarData(calMap);
+    }
+
     setLastUpdated(new Date().toLocaleTimeString('ja-JP'));
     setIsLoading(false);
   }, []);
@@ -107,7 +130,7 @@ export default function AdminDashboard() {
     return () => clearInterval(interval);
   }, [fetchAllData]);
 
-  // 有効受注（キャンセル・未達以外）
+  // 有効受注集計
   const activeOrders = useMemo(() => {
     return orders.filter((o) => o.status !== 'cancelled' && o.status !== 'undelivered');
   }, [orders]);
@@ -120,7 +143,6 @@ export default function AdminDashboard() {
     return activeOrders.reduce((sum, o) => sum + (o.total_price || o.price || 0), 0);
   }, [activeOrders]);
 
-  // 配達枠ごとの集計
   const slotStats = useMemo(() => {
     const stats: Record<string, { boxes: number; orders: number }> = {
       '07:00': { boxes: 0, orders: 0 },
@@ -137,28 +159,20 @@ export default function AdminDashboard() {
     return stats;
   }, [activeOrders]);
 
-  // 1. 店頭でキープ（確保）されている箱数 (ready_store)
   const deliveryKeptBoxes = useMemo(() => {
     return orders
       .filter((o) => o.status === 'ready_store')
       .reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0);
   }, [orders]);
 
-  // 2. キッチン側でまだ製造が必要な箱数 (order_received, pending のみ)
-  // ※ ready_kitchen はすでに完成しているため、未製造からは除外されます
   const deliveryUncookedBoxes = useMemo(() => {
     return orders
       .filter((o) => o.status === 'order_received' || o.status === 'pending')
       .reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0);
   }, [orders]);
 
-  // 3. 店頭販売可能数
   const takeoutAvailable = Math.max(0, inventory.current_stock - deliveryKeptBoxes);
-  
-  // 4. 店頭補充必要数
   const storeRestockNeeded = Math.max(0, inventory.target_stock - takeoutAvailable);
-  
-  // 5. キッチン製造指示数 = デリバリー未製造 + 店頭補充必要数
   const kitchenSuggestBoxes = deliveryUncookedBoxes + storeRestockNeeded;
 
   // ステータス更新
@@ -187,6 +201,42 @@ export default function AdminDashboard() {
     setInventory((prev) => ({ ...prev, current_stock: newStock, sold_count: newSold }));
     await supabase.from('store_inventory').update({ current_stock: newStock, sold_count: newSold }).eq('target_date', inventory.target_date);
   };
+
+  // カレンダー操作: 日付タップでのトグル
+  const handleToggleCalendarDate = async (dateStr: string) => {
+    const currentStatus = calendarData[dateStr] ? calendarData[dateStr].is_open : true; // デフォルトは営業
+    const nextStatus = !currentStatus;
+
+    setCalendarData((prev) => ({
+      ...prev,
+      [dateStr]: { date: dateStr, is_open: nextStatus },
+    }));
+
+    await supabase.from('store_calendar').upsert({
+      date: dateStr,
+      is_open: nextStatus,
+      updated_at: new Date().toISOString(),
+    });
+  };
+
+  // カレンダー生成ロジック
+  const calendarDays = useMemo(() => {
+    const { year, month } = currentYearMonth;
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const startingDayOfWeek = firstDay.getDay(); // 0: Sun
+    const totalDays = lastDay.getDate();
+
+    const days = [];
+    for (let i = 0; i < startingDayOfWeek; i++) {
+      days.push(null);
+    }
+    for (let d = 1; d <= totalDays; d++) {
+      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      days.push(dateStr);
+    }
+    return days;
+  }, [currentYearMonth]);
 
   // 設定保存
   const handleSaveSettings = async () => {
@@ -232,13 +282,10 @@ export default function AdminDashboard() {
   const getHotelDisplayName = (order: Order) => {
     const raw = order.hotel_name || order.hotel || order.hotel_id || '';
     const found = HOTELS_MASTER.find((h) => String(h.id) === String(raw) || h.name === raw || h.nameJa === raw);
-    if (found) {
-      return `${found.nameJa || found.name}`;
-    }
+    if (found) return `${found.nameJa || found.name}`;
     return raw || 'Hotel Unspecified';
   };
 
-  // ステータスごとの配色バッジ
   const renderStatusBadge = (status: string) => {
     switch (status) {
       case 'order_received':
@@ -266,6 +313,8 @@ export default function AdminDashboard() {
     return <div className="min-h-screen flex items-center justify-center bg-[#f5f5f4] text-stone-500 font-medium">Loading Operations Data...</div>;
   }
 
+  const todayStr = new Date().toISOString().split('T')[0];
+
   return (
     <div className="min-h-screen bg-[#f5f5f4] text-stone-800 font-sans pb-20">
       
@@ -283,7 +332,7 @@ export default function AdminDashboard() {
             <div className="flex bg-stone-100 p-1 rounded-xl border border-stone-200">
               <button
                 onClick={() => setActiveTab('operations')}
-                className={`px-5 py-2 rounded-lg text-xs font-bold transition ${
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition ${
                   activeTab === 'operations'
                     ? 'bg-white text-stone-900 shadow-sm border border-stone-200'
                     : 'text-stone-500 hover:text-stone-800'
@@ -292,8 +341,18 @@ export default function AdminDashboard() {
                 📦 Operations (現場管理)
               </button>
               <button
+                onClick={() => setActiveTab('calendar')}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition ${
+                  activeTab === 'calendar'
+                    ? 'bg-white text-stone-900 shadow-sm border border-stone-200'
+                    : 'text-stone-500 hover:text-stone-800'
+                }`}
+              >
+                📅 Calendar (営業カレンダー)
+              </button>
+              <button
                 onClick={() => setActiveTab('settings')}
-                className={`px-5 py-2 rounded-lg text-xs font-bold transition ${
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition ${
                   activeTab === 'settings'
                     ? 'bg-white text-stone-900 shadow-sm border border-stone-200'
                     : 'text-stone-500 hover:text-stone-800'
@@ -325,7 +384,6 @@ export default function AdminDashboard() {
             {/* 上段3カラムサマリー */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               
-              {/* キッチン製造指示 */}
               <div className="bg-stone-900 text-white p-5 rounded-2xl shadow-sm space-y-3">
                 <span className="text-[10px] uppercase tracking-wider text-stone-400 font-bold block">
                   KITCHEN SUGGEST / 製造指示
@@ -346,7 +404,6 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
-              {/* デリバリー有効受注 */}
               <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
                 <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold block">
                   ACTIVE DELIVERY ORDERS / デリバリー有効受注
@@ -360,7 +417,6 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
-              {/* 店頭販売累計 */}
               <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
                 <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold block">
                   TAKEOUT SOLD (TODAY) / 店頭販売累計
@@ -379,7 +435,6 @@ export default function AdminDashboard() {
             {/* 中段：時間枠別状況 ＆ 店頭在庫POS */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               
-              {/* 配達枠別 状況 */}
               <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
                 <span className="text-xs font-bold text-stone-700 uppercase tracking-wider block">
                   DELIVERY BY TIME SLOT / 配達枠別 状況
@@ -395,7 +450,6 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
-              {/* 店頭在庫 & POS */}
               <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
                 <div className="flex justify-between items-center">
                   <span className="text-xs font-bold text-stone-700 uppercase tracking-wider">
@@ -515,7 +569,122 @@ export default function AdminDashboard() {
         )}
 
         {/* =========================================
-            2. SETTINGS TAB (設定コントロールパネル)
+            2. CALENDAR TAB (営業カレンダー設定)
+            ========================================= */}
+        {activeTab === 'calendar' && (
+          <div className="max-w-3xl mx-auto space-y-6">
+            
+            <div className="flex justify-between items-center">
+              <div>
+                <h2 className="text-xl font-bold text-stone-900">Business Calendar / 営業カレンダー</h2>
+                <p className="text-xs text-stone-500 mt-0.5">
+                  日付をクリックして「🟢 営業」と「🔴 定休日」を切り替えます（自動保存）。
+                </p>
+              </div>
+
+              {/* 年月送りボタン */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentYearMonth(prev => {
+                    const d = new Date(prev.year, prev.month - 1, 1);
+                    return { year: d.getFullYear(), month: d.getMonth() };
+                  })}
+                  className="px-3 py-1.5 bg-white border border-stone-300 rounded-lg text-xs font-bold hover:bg-stone-100"
+                >
+                  ◀ 前月
+                </button>
+                <span className="text-sm font-extrabold text-stone-800 min-w-24 text-center">
+                  {currentYearMonth.year}年 {currentYearMonth.month + 1}月
+                </span>
+                <button
+                  onClick={() => setCurrentYearMonth(prev => {
+                    const d = new Date(prev.year, prev.month + 1, 1);
+                    return { year: d.getFullYear(), month: d.getMonth() };
+                  })}
+                  className="px-3 py-1.5 bg-white border border-stone-300 rounded-lg text-xs font-bold hover:bg-stone-100"
+                >
+                  次月 ▶
+                </button>
+              </div>
+            </div>
+
+            {/* カレンダー本体 */}
+            <div className="bg-white p-6 rounded-3xl border border-stone-200 shadow-sm space-y-4">
+              
+              {/* 曜日ヘッダー */}
+              <div className="grid grid-cols-7 gap-2 text-center text-xs font-bold pb-2 border-b border-stone-100">
+                <span className="text-rose-600">SUN</span>
+                <span className="text-stone-600">MON</span>
+                <span className="text-stone-600">TUE</span>
+                <span className="text-stone-600">WED</span>
+                <span className="text-stone-600">THU</span>
+                <span className="text-stone-600">FRI</span>
+                <span className="text-blue-600">SAT</span>
+              </div>
+
+              {/* 日付グリッド */}
+              <div className="grid grid-cols-7 gap-2">
+                {calendarDays.map((dateStr, idx) => {
+                  if (!dateStr) {
+                    return <div key={`empty-${idx}`} className="h-20 rounded-xl bg-stone-50/50 border border-transparent"></div>;
+                  }
+
+                  const dayNum = parseInt(dateStr.split('-')[2], 10);
+                  const isOpen = calendarData[dateStr] ? calendarData[dateStr].is_open : true; // デフォルトは営業
+                  const isToday = dateStr === todayStr;
+
+                  return (
+                    <button
+                      key={dateStr}
+                      onClick={() => handleToggleCalendarDate(dateStr)}
+                      className={`h-20 p-2 rounded-2xl border transition text-left flex flex-col justify-between cursor-pointer active:scale-95 ${
+                        isOpen
+                          ? 'bg-emerald-50/40 hover:bg-emerald-100/60 border-emerald-200'
+                          : 'bg-rose-50/60 hover:bg-rose-100/80 border-rose-200'
+                      } ${isToday ? 'ring-2 ring-stone-900 shadow-sm' : ''}`}
+                    >
+                      <div className="flex justify-between items-center w-full">
+                        <span className={`text-xs font-bold ${isToday ? 'text-stone-900 underline' : 'text-stone-700'}`}>
+                          {dayNum}
+                        </span>
+                        {isToday && <span className="text-[9px] bg-stone-900 text-white px-1.5 py-0.2 rounded font-bold">Today</span>}
+                      </div>
+
+                      <div className="w-full text-center">
+                        {isOpen ? (
+                          <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100/80 px-2 py-0.5 rounded-full border border-emerald-300 inline-block">
+                            ● 営業中
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold text-rose-700 bg-rose-100/80 px-2 py-0.5 rounded-full border border-rose-300 inline-block">
+                            ✕ 定休日
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* 凡例 */}
+              <div className="flex justify-end gap-4 pt-3 border-t border-stone-100 text-[11px] text-stone-500">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-3 h-3 rounded-full bg-emerald-100 border border-emerald-300"></span>
+                  <span>営業日（注文受付）</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-3 h-3 rounded-full bg-rose-100 border border-rose-300"></span>
+                  <span>定休日（受付完全停止）</span>
+                </div>
+              </div>
+
+            </div>
+
+          </div>
+        )}
+
+        {/* =========================================
+            3. SETTINGS TAB (設定コントロールパネル)
             ========================================= */}
         {activeTab === 'settings' && (
           <div className="max-w-3xl mx-auto space-y-6">
