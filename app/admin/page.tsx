@@ -45,17 +45,37 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December'
 ];
 
+// 朝5:00を境界とした業務日付（YYYY-MM-DD）を取得
+function getBusinessDateStr(date: Date = new Date()): string {
+  const d = new Date(date.getTime());
+  if (d.getHours() < 5) {
+    d.setDate(d.getDate() - 1);
+  }
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export default function AdminDashboard() {
-  const [activeTab, setActiveTab] = useState<'operations' | 'calendar' | 'settings'>('operations');
+  const [activeTab, setActiveTab] = useState<'operations' | 'history' | 'calendar' | 'settings'>('operations');
   const [orders, setOrders] = useState<Order[]>([]);
   const [inventory, setInventory] = useState<StoreInventory>({
-    target_date: new Date().toISOString().split('T')[0],
+    target_date: getBusinessDateStr(),
     target_stock: 10,
     current_stock: 10,
     sold_count: 0,
   });
   const [isLoading, setIsLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string>('');
+
+  // === Operations Filter State ===
+  const [opStatusFilter, setOpStatusFilter] = useState<'active' | 'all' | 'delivered'>('active');
+  const [opSlotFilter, setOpSlotFilter] = useState<string>('all');
+
+  // === History Filter State ===
+  const [historyPeriod, setHistoryPeriod] = useState<'today' | 'yesterday' | 'week' | 'month' | 'all'>('today');
+  const [historySearch, setHistorySearch] = useState('');
 
   // === Calendar State ===
   const [currentYearMonth, setCurrentYearMonth] = useState(() => {
@@ -84,25 +104,26 @@ export default function AdminDashboard() {
   const [saveMessage, setSaveMessage] = useState('');
 
   const fetchAllData = useCallback(async () => {
-    // 1. Orders
+    const currentBizDate = getBusinessDateStr();
+
+    // 1. 全Orders取得
     const { data: orderData, error: orderErr } = await supabase
       .from('orders')
       .select('*')
       .order('id', { ascending: false });
     if (orderData && !orderErr) setOrders(orderData as Order[]);
 
-    // 2. Inventory
-    const today = new Date().toISOString().split('T')[0];
+    // 2. Inventory (業務日付基準)
     const { data: invData } = await supabase
       .from('store_inventory')
       .select('*')
-      .eq('target_date', today)
+      .eq('target_date', currentBizDate)
       .maybeSingle();
 
     if (invData) {
       setInventory(invData);
     } else {
-      const initInv = { target_date: today, target_stock: 10, current_stock: 10, sold_count: 0 };
+      const initInv = { target_date: currentBizDate, target_stock: 10, current_stock: 10, sold_count: 0 };
       const { data: createdInv } = await supabase.from('store_inventory').insert([initInv]).select().maybeSingle();
       if (createdInv) setInventory(createdInv);
     }
@@ -135,10 +156,19 @@ export default function AdminDashboard() {
     return () => clearInterval(interval);
   }, [fetchAllData]);
 
-  // 有効受注集計
+  // Operations用：今日の業務日付（朝5時〜翌朝4時59分）の注文
+  const todayBizDate = getBusinessDateStr();
+  const todayOperationsOrders = useMemo(() => {
+    return orders.filter((o) => {
+      const orderBizDate = getBusinessDateStr(new Date(o.created_at));
+      return orderBizDate === todayBizDate;
+    });
+  }, [orders, todayBizDate]);
+
+  // 有効受注集計（当日分）
   const activeOrders = useMemo(() => {
-    return orders.filter((o) => o.status !== 'cancelled' && o.status !== 'undelivered');
-  }, [orders]);
+    return todayOperationsOrders.filter((o) => o.status !== 'cancelled' && o.status !== 'undelivered');
+  }, [todayOperationsOrders]);
 
   const activeDeliveryBoxes = useMemo(() => {
     return activeOrders.reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0);
@@ -165,29 +195,104 @@ export default function AdminDashboard() {
   }, [activeOrders]);
 
   const deliveryKeptBoxes = useMemo(() => {
-    return orders
+    return todayOperationsOrders
       .filter((o) => o.status === 'ready_store')
       .reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0);
-  }, [orders]);
+  }, [todayOperationsOrders]);
 
   const deliveryUncookedBoxes = useMemo(() => {
-    return orders
+    return todayOperationsOrders
       .filter((o) => o.status === 'order_received' || o.status === 'pending')
       .reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0);
-  }, [orders]);
+  }, [todayOperationsOrders]);
 
   const takeoutAvailable = Math.max(0, inventory.current_stock - deliveryKeptBoxes);
   const storeRestockNeeded = Math.max(0, inventory.target_stock - takeoutAvailable);
   const kitchenSuggestBoxes = deliveryUncookedBoxes + storeRestockNeeded;
 
-  // 現場画面からのクイックトグル（停止時のみ確認ダイアログ）
+  // Operationsテーブル用：ソート ＆ フィルター適用
+  const displayedOperationsOrders = useMemo(() => {
+    return todayOperationsOrders
+      .filter((o) => {
+        if (opStatusFilter === 'active') {
+          return o.status !== 'delivered' && o.status !== 'cancelled' && o.status !== 'undelivered';
+        }
+        if (opStatusFilter === 'delivered') {
+          return o.status === 'delivered';
+        }
+        return true;
+      })
+      .filter((o) => {
+        if (opSlotFilter !== 'all') {
+          const slot = o.delivery_time || o.delivery_slot || o.slot || '08:00';
+          return slot === opSlotFilter;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const slotA = a.delivery_time || a.delivery_slot || a.slot || '08:00';
+        const slotB = b.delivery_time || b.delivery_slot || b.slot || '08:00';
+        if (slotA !== slotB) {
+          return slotA.localeCompare(slotB);
+        }
+        return a.id - b.id;
+      });
+  }, [todayOperationsOrders, opStatusFilter, opSlotFilter]);
+
+  // History用：期間・検索フィルタリング
+  const filteredHistoryOrders = useMemo(() => {
+    const now = new Date();
+    const todayStr = getBusinessDateStr(now);
+
+    const yesterdayDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const yesterdayStr = getBusinessDateStr(yesterdayDate);
+
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    return orders.filter((o) => {
+      const orderDate = new Date(o.created_at);
+      const orderBizDate = getBusinessDateStr(orderDate);
+
+      if (historyPeriod === 'today' && orderBizDate !== todayStr) return false;
+      if (historyPeriod === 'yesterday' && orderBizDate !== yesterdayStr) return false;
+      if (historyPeriod === 'week' && orderDate < sevenDaysAgo) return false;
+      if (historyPeriod === 'month' && orderDate < thirtyDaysAgo) return false;
+
+      if (historySearch.trim()) {
+        const query = historySearch.toLowerCase();
+        const hotel = (o.hotel_name || o.hotel || '').toLowerCase();
+        const guest = (o.guest_name || o.name || '').toLowerCase();
+        const email = (o.contact_email || o.email || '').toLowerCase();
+        const room = String(o.room_number || o.room || '');
+        const id = `#${o.id}`;
+
+        return hotel.includes(query) || guest.includes(query) || email.includes(query) || room.includes(query) || id.includes(query);
+      }
+
+      return true;
+    });
+  }, [orders, historyPeriod, historySearch]);
+
+  const historyTotalRevenue = useMemo(() => {
+    return filteredHistoryOrders
+      .filter((o) => o.status !== 'cancelled')
+      .reduce((sum, o) => sum + (o.total_price || o.price || 0), 0);
+  }, [filteredHistoryOrders]);
+
+  const historyTotalBoxes = useMemo(() => {
+    return filteredHistoryOrders
+      .filter((o) => o.status !== 'cancelled')
+      .reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0);
+  }, [filteredHistoryOrders]);
+
+  // クイックトグル（安全ガード付き）
   const handleQuickToggleSlot = async (slot: string) => {
     const slotKey = slot.replace(':', '');
     const fieldName = `slot_${slotKey}_active` as keyof typeof settings;
     const currentVal = Boolean(settings[fieldName]);
     const nextVal = !currentVal;
 
-    // 停止（SOLD OUT）にするときだけ確認
     if (!nextVal) {
       const confirmed = window.confirm(
         `[CONFIRMATION / 確認]\n\nStop accepting orders for ${slot} delivery slot?\nThis slot will immediately show as SOLD OUT on the order page.\n\n${slot} 枠の注文受付を停止（SOLD OUT）にしますか？`
@@ -196,7 +301,6 @@ export default function AdminDashboard() {
     }
 
     setSettings((prev) => ({ ...prev, [fieldName]: nextVal }));
-
     await supabase
       .from('settings')
       .update({ [fieldName]: nextVal, updated_at: new Date().toISOString() })
@@ -247,7 +351,6 @@ export default function AdminDashboard() {
     });
   };
 
-  // カレンダーグリッド生成
   const calendarDays = useMemo(() => {
     const { year, month } = currentYearMonth;
     const firstDay = new Date(year, month, 1);
@@ -337,7 +440,7 @@ export default function AdminDashboard() {
     }
   };
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getBusinessDateStr();
   const isCalendarOpenToday = calendarData[todayStr] ? calendarData[todayStr].is_open : true;
   const isMasterOpen = settings.is_open && isCalendarOpenToday;
 
@@ -362,7 +465,7 @@ export default function AdminDashboard() {
             <div className="flex bg-stone-100 p-1 rounded-xl border border-stone-200">
               <button
                 onClick={() => setActiveTab('operations')}
-                className={`px-4 py-2 rounded-lg text-xs font-bold transition ${
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
                   activeTab === 'operations'
                     ? 'bg-white text-stone-900 shadow-sm border border-stone-200'
                     : 'text-stone-500 hover:text-stone-800'
@@ -371,8 +474,18 @@ export default function AdminDashboard() {
                 📦 Operations
               </button>
               <button
+                onClick={() => setActiveTab('history')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  activeTab === 'history'
+                    ? 'bg-white text-stone-900 shadow-sm border border-stone-200'
+                    : 'text-stone-500 hover:text-stone-800'
+                }`}
+              >
+                📋 Order History
+              </button>
+              <button
                 onClick={() => setActiveTab('calendar')}
-                className={`px-4 py-2 rounded-lg text-xs font-bold transition ${
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
                   activeTab === 'calendar'
                     ? 'bg-white text-stone-900 shadow-sm border border-stone-200'
                     : 'text-stone-500 hover:text-stone-800'
@@ -382,7 +495,7 @@ export default function AdminDashboard() {
               </button>
               <button
                 onClick={() => setActiveTab('settings')}
-                className={`px-4 py-2 rounded-lg text-xs font-bold transition ${
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
                   activeTab === 'settings'
                     ? 'bg-white text-stone-900 shadow-sm border border-stone-200'
                     : 'text-stone-500 hover:text-stone-800'
@@ -410,7 +523,7 @@ export default function AdminDashboard() {
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
         
         {/* =========================================
-            1. OPERATIONS TAB
+            1. OPERATIONS TAB (現場当日ToDo)
             ========================================= */}
         {activeTab === 'operations' && (
           <div className="space-y-6">
@@ -419,7 +532,7 @@ export default function AdminDashboard() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="bg-stone-900 text-white p-5 rounded-2xl shadow-sm space-y-3">
                 <span className="text-[10px] uppercase tracking-wider text-stone-400 font-bold block">
-                  KITCHEN SUGGEST
+                  KITCHEN SUGGEST (TODAY)
                 </span>
                 <div className="flex items-baseline gap-2">
                   <span className="text-4xl font-extrabold text-white">{kitchenSuggestBoxes}</span>
@@ -439,7 +552,7 @@ export default function AdminDashboard() {
 
               <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
                 <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold block">
-                  ACTIVE DELIVERY ORDERS
+                  ACTIVE DELIVERY ORDERS (TODAY)
                 </span>
                 <div className="flex items-baseline gap-2">
                   <span className="text-3xl font-extrabold text-stone-900">{activeOrders.length}</span>
@@ -469,7 +582,6 @@ export default function AdminDashboard() {
               
               {/* 左側：DELIVERY BY TIME SLOT & LIVE STATUS MONITOR */}
               <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4 flex flex-col justify-between">
-                
                 <div>
                   <div className="flex justify-between items-center mb-3">
                     <span className="text-xs font-bold text-stone-700 uppercase tracking-wider">
@@ -484,7 +596,6 @@ export default function AdminDashboard() {
                     </span>
                   </div>
 
-                  {/* 4スロット箱数サマリー */}
                   <div className="grid grid-cols-4 gap-2">
                     {['07:00', '08:00', '09:00', '10:00'].map((slot) => {
                       const slotKey = slot.replace(':', '');
@@ -512,7 +623,6 @@ export default function AdminDashboard() {
                   </div>
                 </div>
 
-                {/* スロットごとの詳細ステータス ＆ クイックトグル（安全ガード付き） */}
                 <div className="pt-3 border-t border-stone-100 space-y-2">
                   <span className="text-[10px] uppercase tracking-wider text-stone-400 font-bold block">
                     LIVE SLOT CONTROL (QUICK TOGGLE)
@@ -612,29 +722,240 @@ export default function AdminDashboard() {
 
             </div>
 
-            {/* 下段：デリバリー受注一覧テーブル */}
+            {/* 下段：デリバリー受注一覧テーブル（現場ToDo ＆ フィルタリング） */}
+            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
+              
+              {/* テーブル上部：フィルターバー */}
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pb-3 border-b border-stone-100">
+                <div>
+                  <span className="text-xs font-bold text-stone-800 uppercase tracking-wider block">
+                    TODAY'S OPERATIONS QUEUE ({displayedOperationsOrders.length} orders shown)
+                  </span>
+                  <span className="text-[10px] text-stone-400">Sorted chronologically by Delivery Time</span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex bg-stone-100 p-0.5 rounded-lg border border-stone-200 text-[11px]">
+                    <button
+                      onClick={() => setOpStatusFilter('active')}
+                      className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
+                        opStatusFilter === 'active' ? 'bg-white text-stone-900 shadow-xs' : 'text-stone-500 hover:text-stone-800'
+                      }`}
+                    >
+                      🟢 Active (未完了)
+                    </button>
+                    <button
+                      onClick={() => setOpStatusFilter('all')}
+                      className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
+                        opStatusFilter === 'all' ? 'bg-white text-stone-900 shadow-xs' : 'text-stone-500 hover:text-stone-800'
+                      }`}
+                    >
+                      All
+                    </button>
+                    <button
+                      onClick={() => setOpStatusFilter('delivered')}
+                      className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
+                        opStatusFilter === 'delivered' ? 'bg-white text-stone-900 shadow-xs' : 'text-stone-500 hover:text-stone-800'
+                      }`}
+                    >
+                      Delivered
+                    </button>
+                  </div>
+
+                  <div className="flex bg-stone-100 p-0.5 rounded-lg border border-stone-200 text-[11px]">
+                    {['all', '07:00', '08:00', '09:00', '10:00'].map((slot) => (
+                      <button
+                        key={slot}
+                        onClick={() => setOpSlotFilter(slot)}
+                        className={`px-2 py-1 rounded-md font-bold transition cursor-pointer ${
+                          opSlotFilter === slot ? 'bg-white text-stone-900 shadow-xs' : 'text-stone-500 hover:text-stone-800'
+                        }`}
+                      >
+                        {slot === 'all' ? 'All Slots' : slot}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* テーブル本体 */}
+              <div className="overflow-x-auto">
+                {displayedOperationsOrders.length === 0 ? (
+                  <div className="py-12 text-center text-stone-400 space-y-1">
+                    <div className="text-2xl">🎉</div>
+                    <div className="text-xs font-bold text-stone-600">No active orders in this queue</div>
+                    <div className="text-[11px] text-stone-400">All tasks are completed or no orders matched the selected filter.</div>
+                  </div>
+                ) : (
+                  <table className="w-full text-left text-xs text-stone-700 border-collapse">
+                    <thead>
+                      <tr className="border-b border-stone-200 text-stone-400 uppercase text-[10px]">
+                        <th className="py-2.5 px-3">Slot (Time)</th>
+                        <th className="py-2.5 px-3">ID</th>
+                        <th className="py-2.5 px-3">Status</th>
+                        <th className="py-2.5 px-3">Hotel</th>
+                        <th className="py-2.5 px-3">Room</th>
+                        <th className="py-2.5 px-3">Guest Name</th>
+                        <th className="py-2.5 px-3 text-right">Qty</th>
+                        <th className="py-2.5 px-3 text-right">Total</th>
+                        <th className="py-2.5 px-3 text-center">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-stone-100">
+                      {displayedOperationsOrders.map((o) => {
+                        const displayHotel = getHotelDisplayName(o);
+                        const displaySlot = o.delivery_time || o.delivery_slot || o.slot || '08:00';
+                        const displayRoom = o.room_number || o.room || '-';
+                        const displayGuest = o.guest_name || o.name || '-';
+                        const displayEmail = o.contact_email || o.email || '';
+                        const displayQty = o.quantity || o.qty || 1;
+                        const displayTotal = o.total_price || o.price || (displayQty * 1800);
+
+                        const currentStatus = o.status === 'pending' ? 'order_received' : (o.status === 'cooking' ? 'ready_kitchen' : o.status);
+
+                        return (
+                          <tr key={o.id} className="hover:bg-stone-50 transition">
+                            <td className="py-3 px-3 font-extrabold text-stone-900 bg-stone-50/50">{displaySlot}</td>
+                            <td className="py-3 px-3 font-mono font-bold text-stone-400 text-[11px]">#{o.id}</td>
+                            <td className="py-3 px-3">
+                              {renderStatusBadge(currentStatus)}
+                            </td>
+                            <td className="py-3 px-3 font-semibold text-stone-800">{displayHotel}</td>
+                            <td className="py-3 px-3 font-mono text-stone-900 font-bold text-sm">{displayRoom}</td>
+                            <td className="py-3 px-3">
+                              <div className="font-semibold text-stone-900">{displayGuest}</div>
+                              {displayEmail && <div className="text-[10px] text-stone-400">{displayEmail}</div>}
+                            </td>
+                            <td className="py-3 px-3 text-right font-bold text-stone-900">{displayQty}</td>
+                            <td className="py-3 px-3 text-right font-bold text-stone-900">¥{displayTotal.toLocaleString()}</td>
+                            <td className="py-3 px-3 text-center">
+                              <select
+                                value={currentStatus}
+                                onChange={(e) => handleUpdateStatus(o.id, e.target.value)}
+                                className="bg-stone-50 border border-stone-300 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-stone-800 outline-none focus:border-stone-900 cursor-pointer"
+                              >
+                                <option value="order_received">1. order received (Uncooked)</option>
+                                <option value="ready_store">2-A. ready store (Ready at Store)</option>
+                                <option value="ready_kitchen">2-B. ready kitchen (Ready at Kitchen)</option>
+                                <option value="delivering">3. delivering (In Delivery)</option>
+                                <option value="delivered">4. delivered (Completed)</option>
+                                <option value="undelivered">5. undelivered (Failed/No-show)</option>
+                                <option value="cancelled">6. cancelled</option>
+                              </select>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* =========================================
+            2. ORDER HISTORY TAB (過去の全履歴・検索)
+            ========================================= */}
+        {activeTab === 'history' && (
+          <div className="space-y-6">
+            
+            {/* 期間フィルター ＆ 検索バー（クリアボタン付き） */}
+            <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs flex flex-col md:flex-row justify-between items-center gap-4">
+              <div className="flex bg-stone-100 p-1 rounded-xl border border-stone-200 w-full md:w-auto">
+                {[
+                  { key: 'today', label: 'Today' },
+                  { key: 'yesterday', label: 'Yesterday' },
+                  { key: 'week', label: 'Last 7 Days' },
+                  { key: 'month', label: 'Last 30 Days' },
+                  { key: 'all', label: 'All Time' },
+                ].map((p) => (
+                  <button
+                    key={p.key}
+                    onClick={() => setHistoryPeriod(p.key as any)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex-1 md:flex-none cursor-pointer ${
+                      historyPeriod === p.key
+                        ? 'bg-white text-stone-900 shadow-sm border border-stone-200'
+                        : 'text-stone-500 hover:text-stone-800'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="w-full md:w-72 relative">
+                <input
+                  type="text"
+                  placeholder="Search guest, hotel, room, #ID..."
+                  value={historySearch}
+                  onChange={(e) => setHistorySearch(e.target.value)}
+                  className="w-full bg-stone-50 border border-stone-300 rounded-xl pl-3.5 pr-8 py-2 text-xs text-stone-900 outline-none focus:border-stone-900"
+                />
+                {historySearch && (
+                  <button
+                    onClick={() => setHistorySearch('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-stone-300 hover:bg-stone-500 text-white flex items-center justify-center text-[10px] font-bold cursor-pointer transition shadow-2xs"
+                    title="Clear search"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* 期間集計サマリー */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-white p-4 rounded-2xl border border-stone-200 shadow-2xs">
+                <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold block">
+                  Total Delivery Revenue
+                </span>
+                <div className="text-2xl font-extrabold text-stone-900 mt-1">
+                  ¥{historyTotalRevenue.toLocaleString()}
+                </div>
+              </div>
+              <div className="bg-white p-4 rounded-2xl border border-stone-200 shadow-2xs">
+                <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold block">
+                  Total Boxes Delivered
+                </span>
+                <div className="text-2xl font-extrabold text-stone-900 mt-1">
+                  {historyTotalBoxes} <span className="text-xs font-normal text-stone-500">boxes</span>
+                </div>
+              </div>
+              <div className="bg-white p-4 rounded-2xl border border-stone-200 shadow-2xs">
+                <span className="text-[10px] uppercase tracking-wider text-stone-500 font-bold block">
+                  Total Orders Placed
+                </span>
+                <div className="text-2xl font-extrabold text-stone-900 mt-1">
+                  {filteredHistoryOrders.length} <span className="text-xs font-normal text-stone-500">orders</span>
+                </div>
+              </div>
+            </div>
+
+            {/* 履歴テーブル */}
             <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
               <span className="text-xs font-bold text-stone-700 uppercase tracking-wider block">
-                DELIVERY ORDERS LIST
+                ORDER ARCHIVE / 注文ログ ({filteredHistoryOrders.length} records)
               </span>
 
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs text-stone-700 border-collapse">
                   <thead>
                     <tr className="border-b border-stone-200 text-stone-400 uppercase text-[10px]">
-                      <th className="py-2.5 px-3">ID</th>
+                      <th className="py-2.5 px-3">Order ID</th>
+                      <th className="py-2.5 px-3">Date & Time</th>
                       <th className="py-2.5 px-3">Status</th>
                       <th className="py-2.5 px-3">Slot</th>
-                      <th className="py-2.5 px-3">Hotel</th>
+                      <th className="py-2.5 px-3">Hotel / Destination</th>
                       <th className="py-2.5 px-3">Room</th>
                       <th className="py-2.5 px-3">Guest Name</th>
                       <th className="py-2.5 px-3 text-right">Qty</th>
                       <th className="py-2.5 px-3 text-right">Total</th>
-                      <th className="py-2.5 px-3 text-center">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-stone-100">
-                    {orders.map((o) => {
+                    {filteredHistoryOrders.map((o) => {
                       const displayHotel = getHotelDisplayName(o);
                       const displaySlot = o.delivery_time || o.delivery_slot || o.slot || '08:00';
                       const displayRoom = o.room_number || o.room || '-';
@@ -642,12 +963,19 @@ export default function AdminDashboard() {
                       const displayEmail = o.contact_email || o.email || '';
                       const displayQty = o.quantity || o.qty || 1;
                       const displayTotal = o.total_price || o.price || (displayQty * 1800);
+                      const createdDateStr = new Date(o.created_at).toLocaleString('ja-JP', {
+                        month: '2-digit',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      });
 
                       const currentStatus = o.status === 'pending' ? 'order_received' : (o.status === 'cooking' ? 'ready_kitchen' : o.status);
 
                       return (
                         <tr key={o.id} className="hover:bg-stone-50 transition">
                           <td className="py-3 px-3 font-mono font-bold text-stone-400 text-[11px]">#{o.id}</td>
+                          <td className="py-3 px-3 font-mono text-[11px] text-stone-500 whitespace-nowrap">{createdDateStr}</td>
                           <td className="py-3 px-3">
                             {renderStatusBadge(currentStatus)}
                           </td>
@@ -660,21 +988,6 @@ export default function AdminDashboard() {
                           </td>
                           <td className="py-3 px-3 text-right font-bold">{displayQty}</td>
                           <td className="py-3 px-3 text-right font-bold text-stone-900">¥{displayTotal.toLocaleString()}</td>
-                          <td className="py-3 px-3 text-center">
-                            <select
-                              value={currentStatus}
-                              onChange={(e) => handleUpdateStatus(o.id, e.target.value)}
-                              className="bg-stone-50 border border-stone-300 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-stone-800 outline-none focus:border-stone-900 cursor-pointer"
-                            >
-                              <option value="order_received">1. order received (Uncooked)</option>
-                              <option value="ready_store">2-A. ready store (Ready at Store)</option>
-                              <option value="ready_kitchen">2-B. ready kitchen (Ready at Kitchen)</option>
-                              <option value="delivering">3. delivering (In Delivery)</option>
-                              <option value="delivered">4. delivered (Completed)</option>
-                              <option value="undelivered">5. undelivered (Failed/No-show)</option>
-                              <option value="cancelled">6. cancelled</option>
-                            </select>
-                          </td>
                         </tr>
                       );
                     })}
@@ -687,7 +1000,7 @@ export default function AdminDashboard() {
         )}
 
         {/* =========================================
-            2. CALENDAR TAB
+            3. CALENDAR TAB
             ========================================= */}
         {activeTab === 'calendar' && (
           <div className="max-w-3xl mx-auto space-y-6">
@@ -793,7 +1106,7 @@ export default function AdminDashboard() {
         )}
 
         {/* =========================================
-            3. SETTINGS TAB
+            4. SETTINGS TAB
             ========================================= */}
         {activeTab === 'settings' && (
           <div className="max-w-3xl mx-auto space-y-6">
