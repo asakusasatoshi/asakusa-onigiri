@@ -1,21 +1,16 @@
-import type { Metadata } from "next";
-
-export const metadata: Metadata = {
-  title: "浅草おにぎりデリバリー | Asakusa Onigiri Delivery",
-  description: "Artisanal Tokyo Onigiri Breakfast Box Delivered to Your Hotel",
-};
-
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode;
-}>) {
+}) {
   return (
     <html lang="ja">
       <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
         <script src="https://cdn.tailwindcss.com"></script>
       </head>
-      <body className="antialiased min-h-screen bg-[#f7f5f0] text-[#2d2926]">
+      <body className="antialiased min-h-screen bg-[#fafaf9] text-[#2d2926]">
         {children}
       </body>
     </html>
