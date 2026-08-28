@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import { HOTELS_MASTER } from '@/data/hotels';
 
 interface SlotConfig {
   time: string;
@@ -17,6 +16,7 @@ interface HotelItem {
   lat: number;
   lng: number;
   areaGroup?: string;
+  area?: string;
 }
 
 const DEFAULT_SLOTS: SlotConfig[] = [
@@ -28,8 +28,8 @@ const DEFAULT_SLOTS: SlotConfig[] = [
 
 function getBusinessDateStr(date: Date = new Date(), cutoffHour = 18): string {
   const d = new Date(date.getTime());
-  if (d.getHours() < cutoffHour) {
-    d.setDate(d.getDate() - 1);
+  if (d.getHours() >= cutoffHour) { 
+    d.setDate(d.getDate() + 1);
   }
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -52,7 +52,8 @@ function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: num
 }
 
 export default function OrderPage() {
-  const hotels = HOTELS_MASTER as HotelItem[];
+  const [hotels, setHotels] = useState<HotelItem[]>([]);
+  
   const [selectedHotel, setSelectedHotel] = useState<HotelItem | null>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [isLocating, setIsLocating] = useState(false);
@@ -64,7 +65,6 @@ export default function OrderPage() {
   const [deliverySlot, setDeliverySlot] = useState('');
   const [quantity, setQuantity] = useState(1);
 
-  // Settings & Slots State
   const [itemPrice, setItemPrice] = useState(1600);
   const [deliveryFee, setDeliveryFee] = useState(150);
   const [vatRate, setVatRate] = useState(10);
@@ -82,35 +82,69 @@ export default function OrderPage() {
   const [orderComplete, setOrderComplete] = useState(false);
   const [confirmedOrder, setConfirmedOrder] = useState<any>(null);
 
-  // Map Refs
+  const [currentTime, setCurrentTime] = useState(new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 30000); 
+    return () => clearInterval(timer);
+  }, []);
+  
+  const rawCurrentMinutes = currentTime.getHours() * 60 + currentTime.getMinutes();
+
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<{ [key: string]: any }>({});
   const userMarkerRef = useRef<any>(null);
   const circleRef = useRef<any>(null);
   const isMapInitializedRef = useRef(false);
+  const hasAutoLocatedRef = useRef(false);
 
-  // --- 厳密な時間判定ロジック（分単位での比較） ---
   const isTimeWithinAcceptance = useMemo(() => {
-    const now = new Date();
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
-
     const [startH, startM] = orderAcceptanceStart.split(':').map(Number);
     const [endH, endM] = orderAcceptanceEnd.split(':').map(Number);
 
     const startMinutes = (startH || 0) * 60 + (startM || 0);
-    const endMinutes = (endH || 22) * 60 + (endM || 0);
+    let endMinutes = (endH || 22) * 60 + (endM || 0);
+    
+    if (endMinutes <= startMinutes) {
+      endMinutes += 1440;
+    }
 
-    return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
-  }, [orderAcceptanceStart, orderAcceptanceEnd]);
+    let checkMinutes = rawCurrentMinutes;
+    if (checkMinutes < startMinutes && endMinutes > 1440) {
+      checkMinutes += 1440;
+    }
+
+    return checkMinutes >= startMinutes && checkMinutes <= endMinutes;
+  }, [orderAcceptanceStart, orderAcceptanceEnd, rawCurrentMinutes]);
 
   const cutoffHour = parseInt((businessCutoffTime || '18:00').split(':')[0], 10) || 18;
   const isStoreOpen = isStoreMasterOpen && isCalendarOpenToday && isTimeWithinAcceptance;
 
-  // 自動計算されるVAT額（商品価格 × VAT率%）
   const vatAmount = useMemo(() => {
     return Math.round(itemPrice * (vatRate / 100));
   }, [itemPrice, vatRate]);
+
+  useEffect(() => {
+    const fetchHotels = async () => {
+      const { data, error } = await supabase
+        .from('hotels')
+        .select('*')
+        .eq('status', 'published');
+
+      if (data && !error) {
+        const loadedHotels: HotelItem[] = data.map((h: any) => ({
+          id: h.id,
+          name: h.name,
+          nameJa: h.name_ja,
+          lat: h.lat,
+          lng: h.lng,
+          area: h.area,
+        }));
+        setHotels(loadedHotels);
+      }
+    };
+    fetchHotels();
+  }, []);
 
   const fetchPageData = async () => {
     let cutoff = '18:00';
@@ -220,13 +254,65 @@ export default function OrderPage() {
     });
   }, [hotels, deliveryRadiusKm]);
 
+  // ★変更箇所：既存のエリア名フォーマットに完全対応
+  const groupedHotels = useMemo(() => {
+    const formatAreaName = (areaStr?: string) => {
+      if (!areaStr) return 'Other Areas';
+      if (areaStr.toLowerCase().endsWith('area')) {
+        return areaStr;
+      }
+      const match = areaStr.match(/\((.*?)\)/);
+      if (match && match[1]) {
+        return match[1].trim() + ' Area';
+      }
+      return areaStr + ' Area';
+    };
+
+    const groups: Record<string, HotelItem[]> = {};
+
+    availableHotels.forEach((h: any) => {
+      const areaName = formatAreaName(h.area); 
+      if (!groups[areaName]) {
+        groups[areaName] = [];
+      }
+      groups[areaName].push(h);
+    });
+
+    Object.keys(groups).forEach((key) => {
+      groups[key].sort((a, b) => a.name.localeCompare(b.name));
+    });
+
+    return Object.keys(groups).sort().map((key) => ({
+      area: key,
+      hotels: groups[key],
+    }));
+  }, [availableHotels]);
+
   const availableSlotsCount = useMemo(() => {
     return activeSlots.filter((slot) => {
       const booked = slotBookedBoxes[slot.time] || 0;
-      const isSoldOut = !slot.is_active || booked >= slot.limit || !isStoreOpen;
+      const [slotH, slotM] = slot.time.split(':').map(Number);
+      
+      let slotMinutes = slotH * 60 + slotM;
+      const [startH] = orderAcceptanceStart.split(':').map(Number);
+      
+      if ((startH || 0) > slotH) {
+        slotMinutes += 1440;
+      }
+      
+      let checkMinutes = rawCurrentMinutes;
+      if (checkMinutes < (startH || 0) * 60 && ((startH || 0) > parseInt(orderAcceptanceEnd.split(':')[0] || '22'))) {
+        checkMinutes += 1440;
+      }
+
+      const isPastCutoff = checkMinutes >= (slotMinutes - 120);
+      
+      const isSoldOut = !slot.is_active || booked >= slot.limit || !isStoreOpen || isPastCutoff;
       return !isSoldOut;
     }).length;
-  }, [activeSlots, slotBookedBoxes, isStoreOpen]);
+  }, [activeSlots, slotBookedBoxes, isStoreOpen, rawCurrentMinutes, orderAcceptanceStart, orderAcceptanceEnd]);
+
+  const isOrderingAvailable = isStoreOpen && availableSlotsCount > 0;
 
   const handleDetectLocation = () => {
     if (typeof window === 'undefined' || !navigator.geolocation) {
@@ -268,7 +354,10 @@ export default function OrderPage() {
   };
 
   useEffect(() => {
-    handleDetectLocation();
+    if (hotels.length > 0 && !hasAutoLocatedRef.current) {
+      hasAutoLocatedRef.current = true;
+      handleDetectLocation();
+    }
   }, [hotels]);
 
   useEffect(() => {
@@ -467,8 +556,8 @@ export default function OrderPage() {
 
   const handleOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isStoreOpen) {
-      alert('Sorry, we are currently closed and not accepting orders (Outside acceptance hours or store is closed). / 現在営業時間外のため、ご注文を受け付けておりません。');
+    if (!isOrderingAvailable) {
+      alert('Sorry, we are currently closed or all slots are sold out. / 現在受付時間外、または全てのスロットが完売しています。');
       return;
     }
     if (!selectedHotel) {
@@ -495,6 +584,24 @@ export default function OrderPage() {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(contactEmail.trim())) {
       alert('Please enter a valid email address. / 有効なメールアドレスを入力してください。');
+      return;
+    }
+
+    const [slotH, slotM] = deliverySlot.split(':').map(Number);
+    let slotMinutes = slotH * 60 + slotM;
+    const [startH] = orderAcceptanceStart.split(':').map(Number);
+    
+    if ((startH || 0) > slotH) {
+      slotMinutes += 1440; 
+    }
+    
+    let checkMinutes = rawCurrentMinutes;
+    if (checkMinutes < (startH || 0) * 60 && ((startH || 0) > parseInt(orderAcceptanceEnd.split(':')[0] || '22'))) {
+      checkMinutes += 1440;
+    }
+
+    if (checkMinutes >= (slotMinutes - 120)) {
+      alert(`The deadline for the ${deliverySlot} slot has passed. Please select a later time. / この配達枠の締め切り時間を過ぎています。`);
       return;
     }
 
@@ -599,11 +706,15 @@ export default function OrderPage() {
       </head>
       <div className="min-h-screen bg-[#fafaf9] text-stone-900 font-sans pb-24">
         
-        {!isStoreOpen && (
+        {!isStoreOpen ? (
           <div className="bg-rose-600 text-white py-3 px-4 text-center text-xs font-bold tracking-wide shadow-sm sticky top-0 z-50">
             ⚠️ STORE CLOSED / 営業時間外: Today's orders are accepted between {orderAcceptanceStart} and {orderAcceptanceEnd}. (本日の受付時間: {orderAcceptanceStart}〜{orderAcceptanceEnd})
           </div>
-        )}
+        ) : availableSlotsCount === 0 ? (
+          <div className="bg-rose-600 text-white py-3 px-4 text-center text-xs font-bold tracking-wide shadow-sm sticky top-0 z-50">
+            ⚠️ RECEPTION CLOSED / 本日の受付終了: All delivery slots are currently sold out or past the deadline. (全てのスロットが完売、または受付締切時間を過ぎました)
+          </div>
+        ) : null}
 
         <header className="border-b border-stone-200 bg-white/80 backdrop-blur-md sticky top-0 z-40">
           <div className="max-w-xl mx-auto px-4 py-4 flex items-center justify-between">
@@ -612,9 +723,9 @@ export default function OrderPage() {
               <p className="text-[10px] text-stone-400 font-medium tracking-wider uppercase">Authentic Hotel Breakfast Delivery</p>
             </div>
             <span className={`text-[10px] font-extrabold px-2.5 py-1 rounded-full border ${
-              isStoreOpen ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-rose-50 text-rose-700 border-rose-300'
+              isOrderingAvailable ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-rose-50 text-rose-700 border-rose-300'
             }`}>
-              {isStoreOpen ? '● OPEN' : '✕ CLOSED'}
+              {isOrderingAvailable ? '● OPEN' : '✕ CLOSED'}
             </span>
           </div>
         </header>
@@ -646,7 +757,7 @@ export default function OrderPage() {
                   <label className="text-xs font-bold text-stone-800 uppercase tracking-wider block">
                     1. Select Your Hotel / 配達先ホテル <span className="text-rose-500">*</span>
                   </label>
-                  <p className="text-[11px] text-stone-400 mt-0.5">Find automatically with GPS or select from map / list.</p>
+                  <p className="text-[11px] text-stone-400 mt-0.5">Find automatically with GPS or select from list.</p>
                 </div>
                 {selectedHotel && (
                   <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200 shrink-0">
@@ -655,28 +766,23 @@ export default function OrderPage() {
                 )}
               </div>
 
-              <button
-                type="button"
-                onClick={handleDetectLocation}
-                disabled={isLocating}
-                className="w-full py-3 bg-stone-50 hover:bg-stone-100 border border-stone-200 hover:border-emerald-600 text-stone-800 rounded-2xl text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-xs active:scale-[0.99] disabled:opacity-60"
-              >
-                <span className="text-sm">📍</span>
-                <span>{isLocating ? 'Detecting your current location...' : 'Auto-detect My Hotel via GPS (現在地から探す)'}</span>
-              </button>
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={handleDetectLocation}
+                  disabled={isLocating}
+                  className="w-full py-3 bg-stone-50 hover:bg-stone-100 border border-stone-200 hover:border-emerald-600 text-stone-800 rounded-2xl text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-xs active:scale-[0.99] disabled:opacity-60"
+                >
+                  <span className="text-sm">📍</span>
+                  <span>{isLocating ? 'Detecting your current location...' : 'Find my hotel via GPS (現在地から探す)'}</span>
+                </button>
 
-              <div className="relative w-full h-56 sm:h-64 rounded-2xl overflow-hidden border border-stone-200 shadow-inner bg-stone-100">
-                <div ref={mapContainerRef} className="w-full h-full z-10" />
-                <div className="absolute top-2.5 left-2.5 z-20 bg-white/95 backdrop-blur-xs px-2.5 py-1 rounded-full text-[10px] font-bold text-stone-700 shadow-xs border border-stone-200 flex items-center gap-1.5 pointer-events-none">
-                  <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
-                  Within {Number(deliveryRadiusKm).toFixed(1)}km Delivery Zone
+                <div className="flex items-center gap-3">
+                  <hr className="flex-1 border-stone-200" />
+                  <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">or select manually</span>
+                  <hr className="flex-1 border-stone-200" />
                 </div>
-              </div>
 
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-stone-400 uppercase tracking-wider block">
-                  Or select manually from list:
-                </label>
                 <select
                   value={selectedHotel ? String(selectedHotel.id) : ''}
                   onChange={(e) => {
@@ -686,12 +792,25 @@ export default function OrderPage() {
                   className="w-full bg-stone-50 border border-stone-300 rounded-2xl px-4 py-3 text-xs font-bold text-stone-800 outline-none focus:border-stone-900 cursor-pointer"
                 >
                   <option value="">-- Choose hotel from list ({availableHotels.length} hotels in range) --</option>
-                  {availableHotels.map((h) => (
-                    <option key={h.id} value={String(h.id)}>
-                      {h.name} {h.nameJa ? `(${h.nameJa})` : ''}
-                    </option>
+                  
+                  {groupedHotels.map((group) => (
+                    <optgroup key={group.area} label={`▼ ${group.area}`}>
+                      {group.hotels.map((h) => (
+                        <option key={h.id} value={String(h.id)}>
+                          {h.name} {h.nameJa ? `(${h.nameJa})` : ''}
+                        </option>
+                      ))}
+                    </optgroup>
                   ))}
                 </select>
+              </div>
+
+              <div className="relative w-full h-56 sm:h-64 rounded-2xl overflow-hidden border border-stone-200 shadow-inner bg-stone-100 mt-2">
+                <div ref={mapContainerRef} className="w-full h-full z-10" />
+                <div className="absolute top-2.5 left-2.5 z-20 bg-white/95 backdrop-blur-xs px-2.5 py-1 rounded-full text-[10px] font-bold text-stone-700 shadow-xs border border-stone-200 flex items-center gap-1.5 pointer-events-none">
+                  <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
+                  Within {Number(deliveryRadiusKm).toFixed(1)}km Delivery Zone
+                </div>
               </div>
 
               <div className="pt-2 pb-1 px-1 text-[11px] text-stone-500 leading-relaxed space-y-1">
@@ -774,10 +893,22 @@ export default function OrderPage() {
                 </span>
               </div>
 
-              <div className="flex flex-wrap gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 {activeSlots.map((slot) => {
                   const booked = slotBookedBoxes[slot.time] || 0;
-                  const isSoldOut = !slot.is_active || booked >= slot.limit || !isStoreOpen;
+                  const [slotH, slotM] = slot.time.split(':').map(Number);
+                  
+                  let slotMinutes = slotH * 60 + slotM;
+                  const [startH] = orderAcceptanceStart.split(':').map(Number);
+                  if ((startH || 0) > slotH) slotMinutes += 1440; 
+
+                  let checkMinutes = rawCurrentMinutes;
+                  if (checkMinutes < (startH || 0) * 60 && ((startH || 0) > parseInt(orderAcceptanceEnd.split(':')[0] || '22'))) {
+                    checkMinutes += 1440;
+                  }
+                  
+                  const isPastCutoff = checkMinutes >= (slotMinutes - 120);
+                  const isSoldOut = !slot.is_active || booked >= slot.limit || !isStoreOpen || isPastCutoff;
                   const isSelected = deliverySlot === slot.time;
                   const remaining = Math.max(0, slot.limit - booked);
 
@@ -787,28 +918,28 @@ export default function OrderPage() {
                       type="button"
                       disabled={isSoldOut}
                       onClick={() => setDeliverySlot(slot.time)}
-                      className={`py-3 px-5 rounded-2xl border text-center transition flex flex-col items-center justify-center cursor-pointer min-w-[120px] flex-1 max-w-[200px] ${
+                      className={`py-3 px-3 rounded-2xl border text-center transition-all flex flex-col items-center justify-center cursor-pointer w-full ${
                         isSoldOut
-                          ? 'bg-stone-50/60 border-stone-200 text-stone-300 cursor-not-allowed opacity-60'
+                          ? 'bg-stone-50/40 border-stone-100 text-stone-300 cursor-not-allowed opacity-40 shadow-none'
                           : isSelected
-                          ? 'bg-emerald-50/60 border-2 border-emerald-700 text-stone-900 shadow-xs'
-                          : 'bg-white hover:bg-stone-50 border border-stone-200 text-stone-800 hover:border-stone-300'
+                          ? 'bg-emerald-50 border-2 border-emerald-600 text-emerald-950 shadow-md'
+                          : 'bg-white hover:bg-stone-50 border border-stone-300 text-stone-800 hover:border-stone-400 hover:shadow-sm'
                       }`}
                     >
                       <div className="flex items-center gap-1.5">
                         {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>}
-                        <span className={`text-base font-extrabold ${isSelected ? 'text-emerald-950' : 'text-stone-800'}`}>
+                        <span className={`text-base font-extrabold ${isSelected ? 'text-emerald-950' : isSoldOut ? 'text-stone-400' : 'text-stone-800'}`}>
                           {slot.time}
                         </span>
                       </div>
                       <span className={`text-[10px] font-bold mt-0.5 tracking-wide ${
                         isSoldOut
-                          ? 'text-rose-400'
+                          ? 'text-stone-300'
                           : isSelected
                           ? 'text-emerald-700 font-extrabold'
-                          : 'text-stone-400'
+                          : 'text-stone-500'
                       }`}>
-                        {isSoldOut ? 'Sold Out' : `${remaining} left`}
+                        {isSoldOut ? (isPastCutoff ? 'Time Over' : 'Sold Out') : `${remaining} left`}
                       </span>
                     </button>
                   );
@@ -862,14 +993,14 @@ export default function OrderPage() {
 
             <button
               type="submit"
-              disabled={!isStoreOpen || isSubmitting}
+              disabled={!isOrderingAvailable || isSubmitting}
               className={`w-full py-4 rounded-2xl text-sm font-extrabold tracking-wide uppercase shadow-lg transition active:scale-[0.99] cursor-pointer ${
-                !isStoreOpen
+                !isOrderingAvailable
                   ? 'bg-stone-300 text-stone-500 cursor-not-allowed shadow-none'
                   : 'bg-emerald-700 hover:bg-emerald-800 text-white shadow-emerald-900/20'
               }`}
             >
-              {isSubmitting ? 'Processing Order...' : isStoreOpen ? `Place Order • ¥${totalPrice.toLocaleString()}` : 'Currently Closed (受付時間外)'}
+              {isSubmitting ? 'Processing Order...' : isOrderingAvailable ? `Place Order • ¥${totalPrice.toLocaleString()}` : 'Reception Closed (受付終了)'}
             </button>
           </form>
         </main>
