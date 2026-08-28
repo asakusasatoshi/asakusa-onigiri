@@ -476,6 +476,38 @@ export default function AdminDashboard() {
   const [newHotelLng, setNewHotelLng] = useState('139.7944');
   const [isScanning, setIsScanning] = useState(false);
 
+  // ホテルマスターのソート用Stateとロジック
+  const [hotelSort, setHotelSort] = useState<{key: 'name' | 'area' | 'status', direction: 'asc' | 'desc'} | null>(null);
+
+  const handleSort = (key: 'name' | 'area' | 'status') => {
+    let direction: 'asc' | 'desc' = 'asc';
+    if (hotelSort && hotelSort.key === key && hotelSort.direction === 'asc') {
+      direction = 'desc';
+    }
+    setHotelSort({ key, direction });
+  };
+
+  const sortedHotels = [...hotels].sort((a, b) => {
+    if (!hotelSort) return 0;
+    let valA = '';
+    let valB = '';
+
+    if (hotelSort.key === 'name') {
+      valA = String(a.name || '').toLowerCase();
+      valB = String(b.name || '').toLowerCase();
+    } else if (hotelSort.key === 'area') {
+      valA = String(a.area || '').toLowerCase();
+      valB = String(b.area || '').toLowerCase();
+    } else if (hotelSort.key === 'status') {
+      valA = a.is_published ? '1' : '0';
+      valB = b.is_published ? '1' : '0';
+    }
+
+    if (valA < valB) return hotelSort.direction === 'asc' ? -1 : 1;
+    if (valA > valB) return hotelSort.direction === 'asc' ? 1 : -1;
+    return 0;
+  });
+
   const [inventory, setInventory] = useState<StoreInventory>({
     target_date: getBusinessDateStr(),
     target_stock: 10,
@@ -717,7 +749,7 @@ export default function AdminDashboard() {
 
   const activeOrders = useMemo(() => todayOperationsOrders.filter((o) => o.status !== 'cancelled' && o.status !== 'undelivered'), [todayOperationsOrders]);
   const activeDeliveryBoxes = useMemo(() => activeOrders.reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0), [activeOrders]);
-  const deliveryRevenue = useMemo(() => activeOrders.reduce((sum, o) => sum + (o.total_price || o.price || 0), 0), [activeOrders]);
+ const deliveryRevenue = useMemo(() => activeOrders.reduce((sum, o) => sum + (o.total_price || o.price || 0), 0), [activeOrders]);
 
   const slotStats = useMemo(() => {
     const stats: Record<string, { boxes: number; orders: number }> = {};
@@ -957,9 +989,8 @@ export default function AdminDashboard() {
     if (errorMsg) { setSaveErrorMessage(errorMsg); setIsSaving(false); return; }
 
     const { error } = await supabase.from('settings').update({
-      // ⚠️ 注: Supabaseの settings テーブルに takeout_price と delivery_price のカラムを追加しておく必要があります
       takeout_price: settings.takeout_price, delivery_price: settings.delivery_price,
-      delivery_fee: settings.delivery_fee, tax_amount: calculatedDeliveryVat, // 代表してデリバリー税額を保存
+      delivery_fee: settings.delivery_fee, tax_amount: calculatedDeliveryVat,
       delivery_radius_km: settings.delivery_radius_km, is_open: settings.is_open, default_target_stock: settings.default_target_stock,
       delivery_slots: settings.delivery_slots, business_cutoff_time: settings.business_cutoff_time,
       order_acceptance_start: settings.order_acceptance_start, order_acceptance_end: settings.order_acceptance_end, updated_at: new Date().toISOString(),
@@ -1025,9 +1056,6 @@ export default function AdminDashboard() {
 
   return (
     <>
-      <head>
-        <script src="https://cdn.tailwindcss.com"></script>
-      </head>
       <div className="min-h-screen bg-[#f5f5f4] text-stone-800 font-sans pb-20">
 
         {/* 上部ヘッダー ＆ タブバー */}
@@ -1074,6 +1102,19 @@ export default function AdminDashboard() {
               ========================================= */}
           {activeTab === 'operations' && (
             <div className="space-y-6">
+              
+              {/* ★ 営業日の明記セクション（修正版） */}
+              <div className="flex items-baseline gap-3 pb-2 border-b border-stone-200">
+                <span className="text-[11px] font-bold text-stone-500 uppercase tracking-widest">Active Business Date</span>
+                <span className="text-xl font-black text-stone-900 font-mono tracking-tighter">
+                  {(() => {
+                    const [y, m, d] = todayBizDate.split('-');
+                    const dateObj = new Date(Number(y), Number(m) - 1, Number(d));
+                    const weekday = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'][dateObj.getDay()];
+                    return `${y}.${m}.${d} (${weekday})`;
+                  })()}
+                </span>
+              </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="bg-stone-900 text-white p-5 rounded-2xl shadow-sm space-y-3">
@@ -1710,6 +1751,7 @@ export default function AdminDashboard() {
                   </div>
                 </div>
               </div>
+            </div>
 
               {/* 3. 料金 & VAT設定 (★ 店頭・デリバリー分離化) */}
               <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
@@ -1763,7 +1805,7 @@ export default function AdminDashboard() {
                   </div>
                 </div>
               </div>
-</div>
+
               {/* 4. 配達エリア設定 */}
               <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-3">
                 <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">4. Delivery Coverage</h3>
@@ -1807,13 +1849,23 @@ export default function AdminDashboard() {
                   <span className="text-[11px] font-bold text-stone-600 uppercase tracking-wider block">Registered Hotels & Hostels ({hotels.filter(h => h.status !== 'pending').length} items)</span>
                   <div className="overflow-x-auto max-h-96 border border-stone-200 rounded-2xl">
                     <table className="w-full text-left text-xs text-stone-700 border-collapse">
-                      <thead className="bg-stone-50 sticky top-0 border-b border-stone-200 text-stone-400 uppercase text-[10px] z-10">
-                        <tr>
-                          <th className="py-2.5 px-3">Hotel Name</th><th className="py-2.5 px-3">Area Group</th><th className="py-2.5 px-3">Status</th><th className="py-2.5 px-3 text-center">Action / NG Reason</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-stone-100">
-                        {hotels.filter(h => h.status !== 'pending').map((h) => (
+                    <thead className="bg-stone-50 sticky top-0 border-b border-stone-200 text-stone-400 uppercase text-[10px] z-10">
+                      <tr>
+                        <th className="py-2.5 px-3 cursor-pointer hover:text-stone-700 select-none transition-colors" onClick={() => handleSort('name')}>
+                          Hotel Name {hotelSort?.key === 'name' ? (hotelSort.direction === 'asc' ? '↑' : '↓') : '↕'}
+                        </th>
+                        <th className="py-2.5 px-3 cursor-pointer hover:text-stone-700 select-none transition-colors" onClick={() => handleSort('area')}>
+                          Area Group {hotelSort?.key === 'area' ? (hotelSort.direction === 'asc' ? '↑' : '↓') : '↕'}
+                        </th>
+                        <th className="py-2.5 px-3 cursor-pointer hover:text-stone-700 select-none transition-colors" onClick={() => handleSort('status')}>
+                          Status {hotelSort?.key === 'status' ? (hotelSort.direction === 'asc' ? '↑' : '↓') : '↕'}
+                        </th>
+                        <th className="py-2.5 px-3 text-right">Action / NG Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-stone-100">
+                      {/* ★ hotels を sortedHotels に変更 */}
+                      {sortedHotels.filter(h => h.status !== 'pending').map((h) => (
                           <RegisteredHotelRow key={h.id} hotel={h} existingAreas={existingAreas} onUpdateDetails={handleUpdateHotelDetails} onUpdateStatus={handleUpdateHotelStatus} />
                         ))}
                       </tbody>
