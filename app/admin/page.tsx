@@ -213,15 +213,26 @@ function PendingHotelCard({
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-amber-100 pl-2">
         <div>
-          {/* ★ ブランクOKのガイドを追加 */}
           <label className="block text-[10px] font-bold text-stone-500 mb-1">日本語表記 (ない場合はブランクでOK)</label>
-          <input
-            type="text"
-            value={editNameJa}
-            onChange={(e) => setEditNameJa(e.target.value)}
-            placeholder="例: 浅草ビューホテル (空欄も可)"
-            className="w-full px-2.5 py-1.5 bg-stone-50 border border-stone-200 rounded-lg outline-none focus:border-stone-400 font-semibold text-stone-800"
-          />
+          <div className="relative">
+            <input
+              type="text"
+              value={editNameJa}
+              onChange={(e) => setEditNameJa(e.target.value)}
+              placeholder="例: 浅草ビューホテル (空欄も可)"
+              className="w-full pl-2.5 pr-8 py-1.5 bg-stone-50 border border-stone-200 rounded-lg outline-none focus:border-stone-400 font-semibold text-stone-800"
+            />
+            {editNameJa && (
+              <button
+                type="button"
+                onClick={() => setEditNameJa('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-stone-300 hover:bg-stone-500 text-white flex items-center justify-center text-[10px] font-bold cursor-pointer transition shadow-2xs"
+                title="クリア"
+              >
+                ✕
+              </button>
+            )}
+          </div>
         </div>
         <div>
           <label className="block text-[10px] font-bold text-stone-500 mb-1">Area Group (既存から選択 / 新規追加)</label>
@@ -273,7 +284,7 @@ function PendingHotelCard({
   );
 }
 
-// --- ★ 新機能: 登録済みホテル用のインライン編集コンポーネント ---
+// --- ★ 登録済みホテル用のインライン編集コンポーネント ---
 function RegisteredHotelRow({
   hotel,
   existingAreas,
@@ -305,13 +316,25 @@ function RegisteredHotelRow({
               placeholder="English Name"
               className="w-full px-2 py-1 bg-white border border-amber-300 rounded text-xs font-bold text-stone-900 outline-none focus:border-emerald-500"
             />
-            <input
-              type="text"
-              value={editNameJa}
-              onChange={(e) => setEditNameJa(e.target.value)}
-              placeholder="日本語表記 (ブランクOK)"
-              className="w-full px-2 py-1 bg-white border border-amber-300 rounded text-[10px] text-stone-600 outline-none focus:border-emerald-500"
-            />
+            <div className="relative">
+              <input
+                type="text"
+                value={editNameJa}
+                onChange={(e) => setEditNameJa(e.target.value)}
+                placeholder="日本語表記 (ブランクOK)"
+                className="w-full pl-2 pr-6 py-1 bg-white border border-amber-300 rounded text-[10px] text-stone-600 outline-none focus:border-emerald-500"
+              />
+              {editNameJa && (
+                <button
+                  type="button"
+                  onClick={() => setEditNameJa('')}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-amber-200 hover:bg-amber-400 text-amber-800 hover:text-white flex items-center justify-center text-[9px] font-bold cursor-pointer transition"
+                  title="クリア"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
           </div>
         </td>
         <td className="py-2.5 px-3">
@@ -1546,7 +1569,7 @@ export default function AdminDashboard() {
                                   <option value="ready_kitchen">2-B. ready kitchen (Ready at Kitchen)</option>
                                   <option value="delivering">3. delivering (In Delivery)</option>
                                   <option value="delivered">4. delivered (Completed)</option>
-                                  <option value="undundelivered">5. undelivered (Failed/No-show)</option>
+                                  <option value="undelivered">5. undelivered (Failed/No-show)</option>
                                   <option value="cancelled">6. cancelled</option>
                                 </select>
                               </td>
