@@ -476,7 +476,6 @@ export default function AdminDashboard() {
   const [newHotelLng, setNewHotelLng] = useState('139.7944');
   const [isScanning, setIsScanning] = useState(false);
 
-  // ホテルマスターのソート用Stateとロジック
   const [hotelSort, setHotelSort] = useState<{key: 'name' | 'area' | 'status', direction: 'asc' | 'desc'} | null>(null);
 
   const handleSort = (key: 'name' | 'area' | 'status') => {
@@ -749,7 +748,7 @@ export default function AdminDashboard() {
 
   const activeOrders = useMemo(() => todayOperationsOrders.filter((o) => o.status !== 'cancelled' && o.status !== 'undelivered'), [todayOperationsOrders]);
   const activeDeliveryBoxes = useMemo(() => activeOrders.reduce((sum, o) => sum + (o.quantity || o.qty || 1), 0), [activeOrders]);
- const deliveryRevenue = useMemo(() => activeOrders.reduce((sum, o) => sum + (o.total_price || o.price || 0), 0), [activeOrders]);
+  const deliveryRevenue = useMemo(() => activeOrders.reduce((sum, o) => sum + (o.total_price || o.price || 0), 0), [activeOrders]);
 
   const slotStats = useMemo(() => {
     const stats: Record<string, { boxes: number; orders: number }> = {};
@@ -855,10 +854,12 @@ export default function AdminDashboard() {
     const updatedSlots = effectiveTodaySlots.map((s) => (s.time === slotTime ? { ...s, is_active: nextActive } : s));
     if (todayCalendar && todayCalendar.custom_slots && todayCalendar.custom_slots.length > 0) {
       setCalendarData((prev) => ({ ...prev, [todayBizDate]: { ...prev[todayBizDate], custom_slots: updatedSlots } }));
-      await supabase.from('store_calendar').upsert({ date: todayBizDate, is_open: todayCalendar.is_open, custom_slots: updatedSlots, updated_at: new Date().toISOString() });
+      const { error } = await supabase.from('store_calendar').upsert({ date: todayBizDate, is_open: todayCalendar.is_open, custom_slots: JSON.stringify(updatedSlots), updated_at: new Date().toISOString() });
+      if (error) alert('Failed to update slot: ' + error.message);
     } else {
       setSettings((prev) => ({ ...prev, delivery_slots: updatedSlots }));
-      await supabase.from('settings').update({ delivery_slots: updatedSlots, updated_at: new Date().toISOString() }).eq('id', 'default_settings');
+      const { error } = await supabase.from('settings').update({ delivery_slots: JSON.stringify(updatedSlots), updated_at: new Date().toISOString() }).eq('id', 'default_settings');
+      if (error) alert('Failed to update slot: ' + error.message);
     }
   };
 
@@ -940,9 +941,15 @@ export default function AdminDashboard() {
     const finalSlots = modalUseCustomSlots ? modalSlots : settings.delivery_slots;
 
     const errorMsg = validateTimeSettings(finalStart, finalEnd, finalCutoff, finalSlots);
-    if (errorMsg) { setModalErrorMessage(errorMsg); return; }
+    if (errorMsg) { 
+      setModalErrorMessage(errorMsg); 
+      alert("⚠️ 保存エラー:\n" + errorMsg);
+      return; 
+    }
 
-    const finalCustomSlots = modalUseCustomSlots ? modalSlots : null;
+    const finalCustomSlotsLocal = modalUseCustomSlots ? modalSlots : null;
+    const finalCustomSlotsDb = modalUseCustomSlots ? JSON.stringify(modalSlots) : null;
+    
     const finalTargetStock = modalTargetStock === '' ? null : Number(modalTargetStock);
     const finalCutoffDb = modalUseCustomHours ? modalCutoffTime : null;
     const finalStartDb = modalUseCustomHours ? modalAcceptStart : null;
@@ -951,20 +958,42 @@ export default function AdminDashboard() {
     const finalWeatherDb = modalWeather.trim() === '' ? null : modalWeather.trim();
     const finalNoteDb = modalNote.trim() === '' ? null : modalNote.trim();
 
+    const { error } = await supabase.from('store_calendar').upsert({
+      date: selectedCalDate, 
+      is_open: modalIsOpen, 
+      custom_slots: finalCustomSlotsDb, 
+      target_stock: finalTargetStock,
+      custom_cutoff_time: finalCutoffDb, 
+      custom_acceptance_start: finalStartDb, 
+      custom_acceptance_end: finalEndDb,
+      operating_radius: finalRadiusDb, 
+      weather: finalWeatherDb, 
+      note: finalNoteDb, 
+      updated_at: new Date().toISOString()
+    });
+
+    if (error) {
+      setModalErrorMessage('DB保存エラー: ' + error.message);
+      alert('⚠️ データベース保存エラー:\n' + error.message);
+      return;
+    }
+
     setCalendarData((prev) => ({
       ...prev,
       [selectedCalDate]: {
-        date: selectedCalDate, is_open: modalIsOpen, custom_slots: finalCustomSlots, target_stock: finalTargetStock,
-        custom_cutoff_time: finalCutoffDb, custom_acceptance_start: finalStartDb, custom_acceptance_end: finalEndDb,
-        operating_radius: finalRadiusDb, weather: finalWeatherDb, note: finalNoteDb
+        date: selectedCalDate, 
+        is_open: modalIsOpen, 
+        custom_slots: finalCustomSlotsLocal, 
+        target_stock: finalTargetStock,
+        custom_cutoff_time: finalCutoffDb, 
+        custom_acceptance_start: finalStartDb, 
+        custom_acceptance_end: finalEndDb,
+        operating_radius: finalRadiusDb, 
+        weather: finalWeatherDb, 
+        note: finalNoteDb
       },
     }));
 
-    await supabase.from('store_calendar').upsert({
-      date: selectedCalDate, is_open: modalIsOpen, custom_slots: finalCustomSlots, target_stock: finalTargetStock,
-      custom_cutoff_time: finalCutoffDb, custom_acceptance_start: finalStartDb, custom_acceptance_end: finalEndDb,
-      operating_radius: finalRadiusDb, weather: finalWeatherDb, note: finalNoteDb, updated_at: new Date().toISOString()
-    });
     setSelectedCalDate(null);
     fetchLiveOperationsData(true);
   };
@@ -992,7 +1021,7 @@ export default function AdminDashboard() {
       takeout_price: settings.takeout_price, delivery_price: settings.delivery_price,
       delivery_fee: settings.delivery_fee, tax_amount: calculatedDeliveryVat,
       delivery_radius_km: settings.delivery_radius_km, is_open: settings.is_open, default_target_stock: settings.default_target_stock,
-      delivery_slots: settings.delivery_slots, business_cutoff_time: settings.business_cutoff_time,
+      delivery_slots: JSON.stringify(settings.delivery_slots), business_cutoff_time: settings.business_cutoff_time,
       order_acceptance_start: settings.order_acceptance_start, order_acceptance_end: settings.order_acceptance_end, updated_at: new Date().toISOString(),
     }).eq('id', 'default_settings');
 
@@ -1048,6 +1077,46 @@ export default function AdminDashboard() {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
     }
+  };
+
+  // ★ 新しいステータス判定ロジック ★
+  const activeAcceptanceStart = todayCalendar?.custom_acceptance_start || settings.order_acceptance_start || '07:00';
+  const activeAcceptanceEnd = todayCalendar?.custom_acceptance_end || settings.order_acceptance_end || '22:00';
+
+  const isWithinAcceptance = useMemo(() => {
+    const [startH, startM] = activeAcceptanceStart.split(':').map(Number);
+    const [endH, endM] = activeAcceptanceEnd.split(':').map(Number);
+
+    const startMinutes = (startH || 0) * 60 + (startM || 0);
+    let endMinutes = (endH || 22) * 60 + (endM || 0);
+    
+    if (endMinutes <= startMinutes) {
+      endMinutes += 1440;
+    }
+
+    let checkMinutes = currentMinutes;
+    if (checkMinutes < startMinutes && endMinutes > 1440) {
+      checkMinutes += 1440;
+    }
+
+    return checkMinutes >= startMinutes && checkMinutes <= endMinutes;
+  }, [activeAcceptanceStart, activeAcceptanceEnd, currentMinutes]);
+
+  const getSlotStatus = (slot: SlotConfig, booked: number) => {
+    if (!slot.is_active) return { label: '× OFF (Manually shut down)', color: 'bg-stone-800 text-stone-100 border-stone-900', boxBg: 'bg-stone-200/50 opacity-70' };
+
+    const [y, m, d] = todayBizDate.split('-');
+    const [slotH, slotM] = slot.time.split(':').map(Number);
+    const slotDateTime = new Date(Number(y), Number(m) - 1, Number(d), slotH, slotM);
+    const deadlineTime = new Date(slotDateTime.getTime() - 120 * 60000); 
+    const isPastCutoff = currentTime.getTime() >= deadlineTime.getTime();
+
+    if (isPastCutoff) return { label: '× TIME OVER', color: 'bg-stone-200 text-stone-500 border-stone-300', boxBg: 'bg-stone-50 opacity-80' };
+    if (booked >= slot.limit) return { label: '× SOLD OUT', color: 'bg-rose-100 text-rose-700 border-rose-300', boxBg: 'bg-rose-50/50' };
+    if (!isMasterOpen) return { label: '× OFF (Store Closed)', color: 'bg-stone-800 text-stone-100 border-stone-900', boxBg: 'bg-stone-200/50 opacity-70' };
+    if (!isWithinAcceptance) return { label: `× STANDBY (Opens at ${activeAcceptanceStart})`, color: 'bg-stone-100 text-stone-500 border-stone-300', boxBg: 'bg-stone-50' };
+    
+    return { label: '○ OPEN', color: 'bg-emerald-100 text-emerald-800 border-emerald-300', boxBg: 'bg-white border-emerald-300 shadow-sm' };
   };
 
   if (isLoading) {
@@ -1173,16 +1242,14 @@ export default function AdminDashboard() {
                     <div className={`grid gap-2 ${effectiveTodaySlots.length <= 3 ? 'grid-cols-3' : effectiveTodaySlots.length === 4 ? 'grid-cols-4' : effectiveTodaySlots.length === 5 ? 'grid-cols-5' : 'grid-cols-3 sm:grid-cols-4'}`}>
                       {effectiveTodaySlots.map((slot) => {
                         const booked = slotStats[slot.time]?.boxes || 0;
-                        const [slotH, slotM] = slot.time.split(':').map(Number);
-                        const isPastCutoff = currentMinutes >= (slotH * 60 + slotM - 120);
-                        const isSoldOut = !slot.is_active || booked >= slot.limit || !isMasterOpen || isPastCutoff;
+                        const statusInfo = getSlotStatus(slot, booked);
 
                         return (
-                          <div key={slot.time} className={`p-2.5 rounded-xl border text-center transition ${isSoldOut ? 'bg-stone-50/80 border-stone-200 opacity-70' : 'bg-stone-50 border-stone-200'}`}>
+                          <div key={slot.time} className={`p-2.5 rounded-xl border text-center transition flex flex-col items-center justify-center ${statusInfo.boxBg}`}>
                             <span className="text-[11px] font-bold text-stone-600 block">{slot.time}</span>
                             <div className="text-lg font-extrabold text-stone-900 my-0.5">{booked} <span className="text-[9px] font-normal text-stone-400">/ {slot.limit}</span></div>
-                            <span className={`text-[9px] font-extrabold uppercase px-1.5 py-0.2 rounded ${isSoldOut ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-800'}`}>
-                              {isPastCutoff ? 'CLOSED' : (isSoldOut ? 'SOLD' : 'OPEN')}
+                            <span className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded border w-max ${statusInfo.color}`}>
+                              {statusInfo.label}
                             </span>
                           </div>
                         );
@@ -1199,15 +1266,12 @@ export default function AdminDashboard() {
                     <div className="space-y-1.5">
                       {effectiveTodaySlots.map((slot) => {
                         const booked = slotStats[slot.time]?.boxes || 0;
-                        const remaining = Math.max(0, slot.limit - booked);
-                        const [slotH, slotM] = slot.time.split(':').map(Number);
-                        const isPastCutoff = currentMinutes >= (slotH * 60 + slotM - 120);
-                        const isSoldOut = !slot.is_active || remaining <= 0 || !isMasterOpen || isPastCutoff;
+                        const statusInfo = getSlotStatus(slot, booked);
 
                         return (
-                          <div key={`row-${slot.time}`} className={`flex items-center justify-between px-3 py-1.5 rounded-xl border text-xs transition ${isSoldOut ? 'bg-rose-50/40 border-rose-200' : 'bg-stone-50 border-stone-200'}`}>
+                          <div key={`row-${slot.time}`} className={`flex items-center justify-between px-3 py-1.5 rounded-xl border text-xs transition ${statusInfo.boxBg}`}>
                             <div className="flex items-center gap-2.5">
-                              <button onClick={() => handleQuickToggleSlot(slot.time)} className={`w-7 h-4 rounded-full transition relative cursor-pointer ${slot.is_active ? 'bg-emerald-600' : 'bg-stone-300'}`} title={slot.is_active ? 'Click to mark as SOLD OUT' : 'Click to reopen slot'}>
+                              <button onClick={() => handleQuickToggleSlot(slot.time)} className={`w-7 h-4 rounded-full transition relative cursor-pointer ${slot.is_active ? 'bg-emerald-600' : 'bg-stone-300'}`} title={slot.is_active ? 'Click to mark as OFF' : 'Click to reopen slot'}>
                                 <div className={`w-3 h-3 rounded-full bg-white transition absolute top-0.5 ${slot.is_active ? 'right-0.5' : 'left-0.5'}`}></div>
                               </button>
                               <span className="font-bold text-stone-800 text-[11px]">{slot.time} Slot</span>
@@ -1215,8 +1279,8 @@ export default function AdminDashboard() {
 
                             <div className="flex items-center gap-2">
                               <span className="text-[10px] text-stone-500 font-mono">{booked}/{slot.limit} bxs</span>
-                              <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${isSoldOut ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-800'}`}>
-                                {isPastCutoff ? '✕ CLOSED (Time Over)' : (isSoldOut ? '✕ SOLD OUT' : `● OPEN (${remaining} left)`)}
+                              <span className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded border ${statusInfo.color}`}>
+                                {statusInfo.label}
                               </span>
                             </div>
                           </div>

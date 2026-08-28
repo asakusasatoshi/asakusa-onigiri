@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 
 interface SlotConfig {
@@ -65,9 +65,10 @@ export default function OrderPage() {
   const [deliverySlot, setDeliverySlot] = useState('');
   const [quantity, setQuantity] = useState(1);
 
-  const [itemPrice, setItemPrice] = useState(1600);
+  const [deliveryPrice, setDeliveryPrice] = useState(1500);
   const [deliveryFee, setDeliveryFee] = useState(150);
   const [vatRate, setVatRate] = useState(10);
+  
   const [deliveryRadiusKm, setDeliveryRadiusKm] = useState(2.5);
   const [isStoreMasterOpen, setIsStoreMasterOpen] = useState(true);
   const [isCalendarOpenToday, setIsCalendarOpenToday] = useState(true);
@@ -121,8 +122,8 @@ export default function OrderPage() {
   const isStoreOpen = isStoreMasterOpen && isCalendarOpenToday && isTimeWithinAcceptance;
 
   const vatAmount = useMemo(() => {
-    return Math.round(itemPrice * (vatRate / 100));
-  }, [itemPrice, vatRate]);
+    return Math.round(deliveryPrice * (vatRate / 100));
+  }, [deliveryPrice, vatRate]);
 
   useEffect(() => {
     const fetchHotels = async () => {
@@ -154,7 +155,7 @@ export default function OrderPage() {
 
     const { data: setData } = await supabase.from('settings').select('*').eq('id', 'default_settings').maybeSingle();
     if (setData) {
-      setItemPrice(setData.item_price ?? 1600);
+      setDeliveryPrice(setData.delivery_price ?? (setData.item_price ?? 1500));
       setDeliveryFee(setData.delivery_fee ?? 150);
       
       if (setData.vat_rate != null) {
@@ -254,7 +255,6 @@ export default function OrderPage() {
     });
   }, [hotels, deliveryRadiusKm]);
 
-  // ★変更箇所：既存のエリア名フォーマットに完全対応
   const groupedHotels = useMemo(() => {
     const formatAreaName = (areaStr?: string) => {
       if (!areaStr) return 'Other Areas';
@@ -347,7 +347,7 @@ export default function OrderPage() {
       },
       () => {
         setIsLocating(false);
-        alert('Could not retrieve your location. Please select your hotel manually below.');
+        alert('Could not retrieve your location. Please select your hotel manually from the list.');
       },
       { enableHighAccuracy: true, timeout: 7000 }
     );
@@ -406,20 +406,20 @@ export default function OrderPage() {
         radius: deliveryRadiusKm * 1000,
         color: '#059669',
         fillColor: '#10b981',
-        fillOpacity: 0.1,
-        weight: 2,
+        fillOpacity: 0.05,
+        weight: 1,
       }).addTo(map);
       circleRef.current = circle;
 
       const shopIcon = L.divIcon({
         className: 'custom-shop-pin',
-        html: `<div style="background-color: #1c1917; color: white; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: bold; border: 2.5px solid white; box-shadow: 0 3px 8px rgba(0,0,0,0.4);">🍙</div>`,
-        iconSize: [30, 30],
-        iconAnchor: [15, 15],
+        html: `<div style="background-color: #1c1917; width: 14px; height: 14px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>`,
+        iconSize: [14, 14],
+        iconAnchor: [7, 7],
       });
       L.marker([shopLat, shopLng], { icon: shopIcon })
         .addTo(map)
-        .bindPopup('<b style="font-size:12px; color:#1c1917;">ASAKUSA ONIGIRI (Kitchen)</b>');
+        .bindPopup('<b style="font-size:11px; color:#1c1917; font-family: sans-serif;">ASAKUSA ONIGIRI (Kitchen)</b>');
 
       mapInstanceRef.current = map;
       isMapInitializedRef.current = true;
@@ -449,18 +449,18 @@ export default function OrderPage() {
     const userIcon = L.divIcon({
       className: 'custom-user-pin',
       html: `
-        <div style="position: relative; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;">
-          <div style="width: 14px; height: 14px; background-color: #2563eb; border: 2.5px solid white; border-radius: 50%; box-shadow: 0 0 8px rgba(37,99,235,0.8); z-index: 2;"></div>
-          <div style="position: absolute; top: -4px; left: -4px; width: 22px; height: 22px; border-radius: 50%; background-color: rgba(37,99,235,0.35); animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
+        <div style="position: relative; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;">
+          <div style="width: 10px; height: 10px; background-color: #2563eb; border: 2px solid white; border-radius: 50%; box-shadow: 0 0 6px rgba(37,99,235,0.6); z-index: 2;"></div>
+          <div style="position: absolute; top: -3px; left: -3px; width: 16px; height: 16px; border-radius: 50%; background-color: rgba(37,99,235,0.25); animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
         </div>
       `,
-      iconSize: [22, 22],
-      iconAnchor: [11, 11],
+      iconSize: [16, 16],
+      iconAnchor: [8, 8],
     });
 
     const marker = L.marker([userLocation.lat, userLocation.lng], { icon: userIcon })
       .addTo(map)
-      .bindTooltip('<b style="font-size:11px;">Your Location / 現在地</b>', { direction: 'top', offset: [0, -10] });
+      .bindTooltip('<b style="font-size:10px; font-family: sans-serif;">Your Location</b>', { direction: 'top', offset: [0, -8] });
 
     userMarkerRef.current = marker;
   }, [userLocation]);
@@ -476,30 +476,25 @@ export default function OrderPage() {
     availableHotels.forEach((h) => {
       const hotelIcon = L.divIcon({
         className: 'custom-hotel-pin',
-        html: `<div id="pin-${h.id}" style="background-color: #ffffff; color: #1c1917; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; border: 2px solid #57534e; box-shadow: 0 2px 6px rgba(0,0,0,0.3); cursor: pointer; transition: all 0.2s ease;">🏨</div>`,
-        iconSize: [26, 26],
-        iconAnchor: [13, 13],
+        html: `<div id="pin-${h.id}" style="background-color: #ffffff; width: 12px; height: 12px; border-radius: 50%; border: 3px solid #57534e; box-shadow: 0 2px 4px rgba(0,0,0,0.2); cursor: pointer; transition: all 0.2s ease;"></div>`,
+        iconSize: [12, 12],
+        iconAnchor: [6, 6],
       });
 
       const marker = L.marker([h.lat, h.lng], { icon: hotelIcon }).addTo(map);
 
       marker.bindTooltip(
-        `<div style="font-family:sans-serif; font-weight:bold; font-size:11px; color:#1c1917; padding:1px 3px;">${h.name}</div>`,
-        { direction: 'top', offset: [0, -13], opacity: 0.95 }
+        `<div style="font-family:sans-serif; font-weight:bold; font-size:10px; color:#1c1917; padding:1px 2px;">${h.name}</div>`,
+        { direction: 'top', offset: [0, -8], opacity: 0.95 }
       );
 
       marker.bindPopup(`
-        <div style="font-family:sans-serif; min-width:160px; padding:2px;">
-          <div style="font-size:12px; font-weight:800; color:#1c1917;">${h.name}</div>
-          ${h.nameJa ? `<div style="font-size:10px; color:#78716c; margin-top:1px;">${h.nameJa}</div>` : ''}
-          <div style="margin-top:6px;">
-            <span style="font-size:9px; font-weight:bold; background:#ecfdf5; color:#047857; padding:2px 6px; border-radius:4px; border:1px solid #a7f3d0;">
-              ✓ Delivery Available
-            </span>
-          </div>
+        <div style="font-family:sans-serif; min-width:140px; padding:2px;">
+          <div style="font-size:11px; font-weight:800; color:#1c1917;">${h.name}</div>
+          ${h.nameJa ? `<div style="font-size:9px; color:#78716c; margin-top:1px;">${h.nameJa}</div>` : ''}
         </div>
       `, {
-        offset: [0, -10],
+        offset: [0, -6],
         autoPan: false
       });
 
@@ -529,16 +524,14 @@ export default function OrderPage() {
       if (el) {
         if (String(h.id) === String(selectedHotel.id)) {
           el.style.backgroundColor = '#059669';
-          el.style.color = '#ffffff';
           el.style.borderColor = '#ffffff';
-          el.style.transform = 'scale(1.3)';
-          el.style.boxShadow = '0 0 12px rgba(5, 150, 105, 0.7)';
+          el.style.transform = 'scale(1.5)';
+          el.style.boxShadow = '0 0 10px rgba(5, 150, 105, 0.5)';
         } else {
           el.style.backgroundColor = '#ffffff';
-          el.style.color = '#1c1917';
           el.style.borderColor = '#57534e';
           el.style.transform = 'scale(1)';
-          el.style.boxShadow = '0 2px 6px rgba(0,0,0,0.3)';
+          el.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
         }
       }
     });
@@ -549,7 +542,7 @@ export default function OrderPage() {
     }
   }, [selectedHotel, availableHotels]);
 
-  const subtotal = itemPrice * quantity;
+  const subtotal = deliveryPrice * quantity;
   const deliveryTotal = deliveryFee;
   const vatTotal = vatAmount * quantity;
   const totalPrice = subtotal + deliveryTotal + vatTotal;
@@ -557,33 +550,15 @@ export default function OrderPage() {
   const handleOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isOrderingAvailable) {
-      alert('Sorry, we are currently closed or all slots are sold out. / 現在受付時間外、または全てのスロットが完売しています。');
+      alert('We are currently closed or all slots are sold out.');
       return;
     }
     if (!selectedHotel) {
-      alert('Please select your hotel.');
+      alert('Please select your delivery destination (hotel).');
       return;
     }
     if (!roomNumber.trim() || !firstName.trim() || !lastName.trim() || !contactEmail.trim()) {
       alert('Please fill in all required fields.');
-      return;
-    }
-
-    const roomRegex = /^[0-9A-Z]+$/;
-    if (!roomRegex.test(roomNumber.trim())) {
-      alert('Room Number must be half-width numbers and uppercase letters only (e.g., 502A). / 部屋番号は半角の数字と大文字アルファベットのみで入力してください。');
-      return;
-    }
-
-    const nameRegex = /^[A-Za-z\s\-'\.]+$/;
-    if (!nameRegex.test(firstName.trim()) || !nameRegex.test(lastName.trim())) {
-      alert('Names must be in English alphabet only. / お名前はアルファベット（英字）のみで入力してください。');
-      return;
-    }
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(contactEmail.trim())) {
-      alert('Please enter a valid email address. / 有効なメールアドレスを入力してください。');
       return;
     }
 
@@ -601,7 +576,7 @@ export default function OrderPage() {
     }
 
     if (checkMinutes >= (slotMinutes - 120)) {
-      alert(`The deadline for the ${deliverySlot} slot has passed. Please select a later time. / この配達枠の締め切り時間を過ぎています。`);
+      alert(`The deadline for the ${deliverySlot} slot has passed. Please select a later time.`);
       return;
     }
 
@@ -645,43 +620,40 @@ export default function OrderPage() {
 
   if (orderComplete && confirmedOrder) {
     return (
-      <div className="min-h-screen bg-[#fafaf9] text-stone-900 font-sans flex items-center justify-center p-4">
-        <div className="max-w-md w-full bg-white rounded-3xl border border-stone-200 shadow-xl p-8 space-y-6 text-center animate-in fade-in zoom-in-95 duration-200">
-          <div className="w-16 h-16 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center mx-auto text-3xl font-bold">
-            ✓
-          </div>
-
-          <div className="space-y-1">
+      <div className="min-h-screen bg-stone-50 text-stone-900 font-sans flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-xl border border-stone-200 shadow-sm p-8 space-y-8 text-center animate-in fade-in zoom-in-95 duration-300">
+          
+          <div className="space-y-2">
             <span className="text-[10px] uppercase font-bold tracking-widest text-emerald-700">Order Confirmed</span>
-            <h2 className="text-2xl font-black text-stone-900 tracking-tight">THANK YOU!</h2>
-            <p className="text-xs text-stone-500 font-mono">Order ID: #{confirmedOrder.id}</p>
+            <h2 className="text-2xl font-black text-stone-900 tracking-tight">THANK YOU</h2>
+            <p className="text-xs text-stone-500 font-mono pt-2">Order ID: #{confirmedOrder.id}</p>
           </div>
 
-          <div className="bg-stone-50 rounded-2xl p-4 text-left space-y-2.5 text-xs border border-stone-200">
-            <div className="flex justify-between">
-              <span className="text-stone-500">Destination:</span>
-              <span className="font-bold text-stone-800">{confirmedOrder.hotel_name}</span>
+          <div className="bg-stone-50 rounded-xl p-5 text-left space-y-3 text-xs border border-stone-200">
+            <div className="flex justify-between border-b border-stone-100 pb-2">
+              <span className="text-stone-500 uppercase tracking-wide text-[10px] font-bold">Destination</span>
+              <span className="font-bold text-stone-800 text-right max-w-[60%]">{confirmedOrder.hotel_name}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-stone-500">Room Number:</span>
+            <div className="flex justify-between border-b border-stone-100 pb-2">
+              <span className="text-stone-500 uppercase tracking-wide text-[10px] font-bold">Room</span>
               <span className="font-bold text-stone-900 font-mono text-sm">{confirmedOrder.room_number}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-stone-500">Delivery Time:</span>
+            <div className="flex justify-between border-b border-stone-100 pb-2">
+              <span className="text-stone-500 uppercase tracking-wide text-[10px] font-bold">Delivery Time</span>
               <span className="font-bold text-stone-900">{confirmedOrder.delivery_time}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-stone-500">Quantity:</span>
-              <span className="font-bold text-stone-900">{confirmedOrder.quantity} Bento Box</span>
+            <div className="flex justify-between pb-2">
+              <span className="text-stone-500 uppercase tracking-wide text-[10px] font-bold">Quantity</span>
+              <span className="font-bold text-stone-900">{confirmedOrder.quantity} Box(es)</span>
             </div>
-            <div className="pt-2 border-t border-stone-200 flex justify-between items-baseline">
-              <span className="font-bold text-stone-700">Total Amount:</span>
-              <span className="text-base font-extrabold text-stone-900">¥{confirmedOrder.total_price?.toLocaleString()}</span>
+            <div className="pt-3 flex justify-between items-baseline border-t border-stone-300">
+              <span className="font-bold text-stone-800 uppercase tracking-wide text-[10px]">Total Paid</span>
+              <span className="text-lg font-black text-stone-900 tracking-tighter">¥{confirmedOrder.total_price?.toLocaleString()}</span>
             </div>
           </div>
 
-          <p className="text-[11px] text-stone-400">
-            We are preparing your fresh breakfast. Our delivery partner will deliver directly to your hotel front / room at the scheduled time.
+          <p className="text-[11px] text-stone-500 leading-relaxed px-4">
+            We are preparing your fresh breakfast. Our delivery partner will deliver directly to your room at the scheduled time.
           </p>
 
           <button
@@ -690,7 +662,7 @@ export default function OrderPage() {
               setConfirmedOrder(null);
               fetchPageData();
             }}
-            className="w-full py-3 bg-stone-900 hover:bg-stone-800 text-white rounded-xl text-xs font-bold transition cursor-pointer"
+            className="w-full py-3.5 bg-stone-900 hover:bg-stone-800 text-white rounded-xl text-xs font-bold transition shadow-sm"
           >
             Place Another Order
           </button>
@@ -704,304 +676,277 @@ export default function OrderPage() {
       <head>
         <script src="https://cdn.tailwindcss.com"></script>
       </head>
-      <div className="min-h-screen bg-[#fafaf9] text-stone-900 font-sans pb-24">
+      <div className="min-h-screen bg-stone-50 text-stone-900 font-sans pb-24">
         
         {!isStoreOpen ? (
-          <div className="bg-rose-600 text-white py-3 px-4 text-center text-xs font-bold tracking-wide shadow-sm sticky top-0 z-50">
-            ⚠️ STORE CLOSED / 営業時間外: Today's orders are accepted between {orderAcceptanceStart} and {orderAcceptanceEnd}. (本日の受付時間: {orderAcceptanceStart}〜{orderAcceptanceEnd})
+          <div className="bg-rose-600 text-white py-3 px-4 text-center text-[11px] font-bold tracking-wide shadow-sm sticky top-0 z-50">
+            ⚠️ STORE CLOSED: We will resume accepting orders tomorrow at {orderAcceptanceStart}.
           </div>
         ) : availableSlotsCount === 0 ? (
-          <div className="bg-rose-600 text-white py-3 px-4 text-center text-xs font-bold tracking-wide shadow-sm sticky top-0 z-50">
-            ⚠️ RECEPTION CLOSED / 本日の受付終了: All delivery slots are currently sold out or past the deadline. (全てのスロットが完売、または受付締切時間を過ぎました)
+          <div className="bg-rose-600 text-white py-3 px-4 text-center text-[11px] font-bold tracking-wide shadow-sm sticky top-0 z-50">
+            ⚠️ RECEPTION CLOSED: All slots sold out. Next acceptance starts tomorrow at {orderAcceptanceStart}.
           </div>
         ) : null}
 
-        <header className="border-b border-stone-200 bg-white/80 backdrop-blur-md sticky top-0 z-40">
-          <div className="max-w-xl mx-auto px-4 py-4 flex items-center justify-between">
+        <header className="border-b border-stone-200 bg-white sticky top-0 z-40">
+          <div className="max-w-xl mx-auto px-5 py-4 flex items-center justify-between">
             <div>
-              <h1 className="text-lg font-black tracking-tight text-stone-900">ASAKUSA ONIGIRI</h1>
-              <p className="text-[10px] text-stone-400 font-medium tracking-wider uppercase">Authentic Hotel Breakfast Delivery</p>
+              <h1 className="text-lg font-black tracking-tighter text-stone-900">ASAKUSA ONIGIRI</h1>
+              <p className="text-[9px] text-stone-500 font-bold tracking-widest uppercase mt-0.5">Authentic Hotel Breakfast Delivery</p>
             </div>
-            <span className={`text-[10px] font-extrabold px-2.5 py-1 rounded-full border ${
-              isOrderingAvailable ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-rose-50 text-rose-700 border-rose-300'
+            <span className={`text-[9px] font-extrabold px-3 py-1 rounded border tracking-widest uppercase ${
+              isOrderingAvailable ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-stone-100 text-stone-500 border-stone-200'
             }`}>
-              {isOrderingAvailable ? '● OPEN' : '✕ CLOSED'}
+              {isOrderingAvailable ? 'OPEN' : 'CLOSED'}
             </span>
           </div>
         </header>
 
-        <main className="max-w-xl mx-auto px-4 py-6 space-y-6">
+        <main className="max-w-xl mx-auto px-4 py-8 space-y-8">
           
-          <div className="bg-white rounded-3xl border border-stone-200 p-5 shadow-2xs space-y-3">
-            <div className="flex justify-between items-start">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
-                  Signature Morning Bento
-                </span>
-                <h2 className="text-lg font-extrabold text-stone-900 mt-1">Traditional Asakusa Onigiri Set</h2>
-                <p className="text-xs text-stone-500 mt-0.5">Wrapped in authentic bamboo skin with seasonal sides.</p>
-              </div>
+          <div className="space-y-1 px-1">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">Signature Menu</span>
+            <div className="flex justify-between items-end">
+              <h2 className="text-2xl font-black text-stone-900 tracking-tight">Traditional Asakusa Onigiri Set</h2>
               <div className="text-right">
-                <span className="text-xl font-extrabold text-stone-900">¥{itemPrice.toLocaleString()}</span>
-                <span className="text-[10px] text-stone-400 block">+ VAT & room delivery</span>
+                <span className="text-xl font-black text-stone-900 tracking-tighter">¥{deliveryPrice.toLocaleString()}</span>
+                <span className="text-[9px] text-stone-400 block uppercase tracking-wider font-bold mt-0.5">+ VAT & Fee</span>
               </div>
             </div>
+            <p className="text-[11px] text-stone-500 pt-2 leading-relaxed max-w-[85%]">
+              Wrapped in authentic bamboo skin with seasonal sides. Handcrafted morning delivery.
+            </p>
           </div>
 
           <form onSubmit={handleOrderSubmit} className="space-y-6">
             
-            <div className="bg-white rounded-3xl border border-stone-200 p-5 shadow-2xs space-y-4">
+            <div className="bg-white rounded-xl border border-stone-200 p-6 shadow-sm space-y-6">
               
-              <div className="flex justify-between items-baseline">
-                <div>
-                  <label className="text-xs font-bold text-stone-800 uppercase tracking-wider block">
-                    1. Select Your Hotel / 配達先ホテル <span className="text-rose-500">*</span>
-                  </label>
-                  <p className="text-[11px] text-stone-400 mt-0.5">Find automatically with GPS or select from list.</p>
-                </div>
-                {selectedHotel && (
-                  <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200 shrink-0">
-                    ✓ Hotel Selected
-                  </span>
-                )}
-              </div>
-
               <div className="space-y-3">
-                <button
-                  type="button"
-                  onClick={handleDetectLocation}
-                  disabled={isLocating}
-                  className="w-full py-3 bg-stone-50 hover:bg-stone-100 border border-stone-200 hover:border-emerald-600 text-stone-800 rounded-2xl text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-xs active:scale-[0.99] disabled:opacity-60"
-                >
-                  <span className="text-sm">📍</span>
-                  <span>{isLocating ? 'Detecting your current location...' : 'Find my hotel via GPS (現在地から探す)'}</span>
-                </button>
-
-                <div className="flex items-center gap-3">
-                  <hr className="flex-1 border-stone-200" />
-                  <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">or select manually</span>
-                  <hr className="flex-1 border-stone-200" />
+                <div className="flex justify-between items-baseline">
+                  <label className="text-[10px] font-bold text-stone-500 uppercase tracking-widest block">
+                    1. Delivery Destination <span className="text-rose-600">*</span>
+                  </label>
+                  {selectedHotel && (
+                    <span className="text-[9px] font-bold text-emerald-600 uppercase tracking-wider">✓ Selected</span>
+                  )}
                 </div>
 
-                <select
-                  value={selectedHotel ? String(selectedHotel.id) : ''}
-                  onChange={(e) => {
-                    const found = hotels.find((h) => String(h.id) === e.target.value);
-                    setSelectedHotel(found || null);
-                  }}
-                  className="w-full bg-stone-50 border border-stone-300 rounded-2xl px-4 py-3 text-xs font-bold text-stone-800 outline-none focus:border-stone-900 cursor-pointer"
-                >
-                  <option value="">-- Choose hotel from list ({availableHotels.length} hotels in range) --</option>
-                  
-                  {groupedHotels.map((group) => (
-                    <optgroup key={group.area} label={`▼ ${group.area}`}>
-                      {group.hotels.map((h) => (
-                        <option key={h.id} value={String(h.id)}>
-                          {h.name} {h.nameJa ? `(${h.nameJa})` : ''}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
-              </div>
+                <div className="relative w-full h-48 rounded-xl overflow-hidden border border-stone-200 bg-stone-100">
+                  <div ref={mapContainerRef} className="w-full h-full z-10" />
+                  <div className="absolute top-2 left-2 z-20 bg-white/95 px-2 py-1 rounded text-[9px] font-bold text-stone-600 shadow-sm border border-stone-200 pointer-events-none uppercase tracking-wider">
+                    {Number(deliveryRadiusKm).toFixed(1)}km Delivery Zone
+                  </div>
+                </div>
 
-              <div className="relative w-full h-56 sm:h-64 rounded-2xl overflow-hidden border border-stone-200 shadow-inner bg-stone-100 mt-2">
-                <div ref={mapContainerRef} className="w-full h-full z-10" />
-                <div className="absolute top-2.5 left-2.5 z-20 bg-white/95 backdrop-blur-xs px-2.5 py-1 rounded-full text-[10px] font-bold text-stone-700 shadow-xs border border-stone-200 flex items-center gap-1.5 pointer-events-none">
-                  <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
-                  Within {Number(deliveryRadiusKm).toFixed(1)}km Delivery Zone
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleDetectLocation}
+                    disabled={isLocating}
+                    className="w-full py-3 bg-white border border-stone-300 hover:border-stone-400 hover:bg-stone-50 text-stone-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm active:translate-y-[1px] disabled:opacity-50"
+                  >
+                    <svg className="w-4 h-4 text-stone-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                    {isLocating ? 'Detecting...' : 'Detect via GPS'}
+                  </button>
+
+                  <select
+                    value={selectedHotel ? String(selectedHotel.id) : ''}
+                    onChange={(e) => {
+                      const found = hotels.find((h) => String(h.id) === e.target.value);
+                      setSelectedHotel(found || null);
+                    }}
+                    className="w-full bg-white border border-stone-300 rounded-xl px-3 py-3 text-xs font-bold text-stone-800 outline-none focus:border-stone-900 cursor-pointer shadow-sm"
+                  >
+                    <option value="">-- Manual Selection --</option>
+                    {groupedHotels.map((group) => (
+                      <optgroup key={group.area} label={`▼ ${group.area}`}>
+                        {group.hotels.map((h) => (
+                          <option key={h.id} value={String(h.id)}>
+                            {h.name} {h.nameJa ? `(${h.nameJa})` : ''}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+                
+                <div className="mt-4 p-3.5 bg-stone-50 rounded-xl border border-stone-200">
+                  <p className="text-xs font-bold text-stone-800 mb-1">Can't find your hotel?</p>
+                  <p className="text-[11px] text-stone-500 leading-relaxed">
+                    To ensure optimal food quality, we exclusively deliver to the designated hotels listed above. Delivery to other accommodations or private rentals is currently unavailable.
+                  </p>
                 </div>
               </div>
 
-              <div className="pt-2 pb-1 px-1 text-[11px] text-stone-500 leading-relaxed space-y-1">
-                <p className="font-semibold text-stone-700">
-                  Can't find your hotel?
-                </p>
-                <p>
-                  To ensure optimal food quality and timely morning delivery, we exclusively deliver to the designated hotels listed above. Delivery to other accommodations or private rentals is currently unavailable.
-                </p>
-              </div>
-
-            </div>
-
-            <div className="bg-white rounded-3xl border border-stone-200 p-5 shadow-2xs space-y-4">
-              <div>
-                <label className="text-xs font-bold text-stone-800 uppercase tracking-wider block mb-1.5">
-                  2. Room Number / 部屋番号 <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. 502A"
-                  value={roomNumber}
-                  onChange={(e) => setRoomNumber(e.target.value)}
-                  required
-                  className="w-full bg-stone-50 border border-stone-300 rounded-2xl px-4 py-3 text-xs font-bold text-stone-900 outline-none focus:border-stone-900 font-mono"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-4 pt-6 border-t border-stone-100">
                 <div>
-                  <label className="text-xs font-bold text-stone-800 uppercase tracking-wider block mb-1.5">
-                    3. First Name / 名 <span className="text-rose-500">*</span>
+                  <label className="text-[10px] font-bold text-stone-500 uppercase tracking-widest block mb-2">
+                    2. Room Number <span className="text-rose-600">*</span>
                   </label>
                   <input
                     type="text"
-                    placeholder="e.g. Satoshi"
-                    value={firstName}
-                    onChange={(e) => setFirstName(e.target.value)}
+                    placeholder="e.g. 502A"
+                    value={roomNumber}
+                    onChange={(e) => setRoomNumber(e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, ''))}
                     required
-                    className="w-full bg-stone-50 border border-stone-300 rounded-2xl px-4 py-3 text-xs font-bold text-stone-900 outline-none focus:border-stone-900"
+                    className="w-full bg-stone-50 border border-stone-300 rounded-xl px-4 py-3 text-xs font-bold text-stone-900 outline-none focus:border-stone-900 font-mono"
                   />
                 </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] font-bold text-stone-500 uppercase tracking-widest block mb-2">
+                      3. First Name <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Satoshi"
+                      value={firstName}
+                      onChange={(e) => setFirstName(e.target.value.replace(/[^A-Za-z\s\-'\.]/g, ''))}
+                      required
+                      className="w-full bg-stone-50 border border-stone-300 rounded-xl px-4 py-3 text-xs font-bold text-stone-900 outline-none focus:border-stone-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-stone-500 uppercase tracking-widest block mb-2">
+                      4. Last Name <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Sanaka"
+                      value={lastName}
+                      onChange={(e) => setLastName(e.target.value.replace(/[^A-Za-z\s\-'\.]/g, ''))}
+                      required
+                      className="w-full bg-stone-50 border border-stone-300 rounded-xl px-4 py-3 text-xs font-bold text-stone-900 outline-none focus:border-stone-900"
+                    />
+                  </div>
+                </div>
+
                 <div>
-                  <label className="text-xs font-bold text-stone-800 uppercase tracking-wider block mb-1.5">
-                    4. Last Name / 姓 <span className="text-rose-500">*</span>
+                  <label className="text-[10px] font-bold text-stone-500 uppercase tracking-widest block mb-2">
+                    5. Email Address <span className="text-rose-600">*</span>
                   </label>
                   <input
-                    type="text"
-                    placeholder="e.g. Sanaka"
-                    value={lastName}
-                    onChange={(e) => setLastName(e.target.value)}
+                    type="email"
+                    placeholder="e.g. guest@example.com"
+                    value={contactEmail}
+                    onChange={(e) => setContactEmail(e.target.value.replace(/[^a-zA-Z0-9@\.\-_+~]/g, ''))}
                     required
-                    className="w-full bg-stone-50 border border-stone-300 rounded-2xl px-4 py-3 text-xs font-bold text-stone-900 outline-none focus:border-stone-900"
+                    className="w-full bg-stone-50 border border-stone-300 rounded-xl px-4 py-3 text-xs font-bold text-stone-900 outline-none focus:border-stone-900"
                   />
                 </div>
               </div>
 
-              <div>
-                <label className="text-xs font-bold text-stone-800 uppercase tracking-wider block mb-1.5">
-                  5. Email Address / 連絡先メール <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="email"
-                  placeholder="e.g. guest@example.com"
-                  value={contactEmail}
-                  onChange={(e) => setContactEmail(e.target.value)}
-                  required
-                  className="w-full bg-stone-50 border border-stone-300 rounded-2xl px-4 py-3 text-xs font-bold text-stone-900 outline-none focus:border-stone-900"
-                />
-              </div>
-            </div>
+              <div className="space-y-4 pt-6 border-t border-stone-100">
+                <div className="flex justify-between items-baseline">
+                  <label className="text-[10px] font-bold text-stone-500 uppercase tracking-widest">
+                    6. Delivery Slot <span className="text-rose-600">*</span>
+                  </label>
+                </div>
 
-            <div className="bg-white rounded-3xl border border-stone-200 p-5 shadow-2xs space-y-3">
-              <div className="flex justify-between items-baseline">
-                <label className="text-xs font-bold text-stone-800 uppercase tracking-wider">
-                  6. Delivery Slots / 配達時間枠 <span className="text-rose-500">*</span>
-                </label>
-                <span className="text-[10px] text-stone-400 font-mono">
-                  Showing {availableSlotsCount} available {availableSlotsCount === 1 ? 'slot' : 'slots'}
-                </span>
-              </div>
+                <div className="grid grid-cols-2 gap-3">
+                  {activeSlots.map((slot) => {
+                    const booked = slotBookedBoxes[slot.time] || 0;
+                    const [slotH, slotM] = slot.time.split(':').map(Number);
+                    
+                    let slotMinutes = slotH * 60 + slotM;
+                    const [startH] = orderAcceptanceStart.split(':').map(Number);
+                    if ((startH || 0) > slotH) slotMinutes += 1440; 
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {activeSlots.map((slot) => {
-                  const booked = slotBookedBoxes[slot.time] || 0;
-                  const [slotH, slotM] = slot.time.split(':').map(Number);
-                  
-                  let slotMinutes = slotH * 60 + slotM;
-                  const [startH] = orderAcceptanceStart.split(':').map(Number);
-                  if ((startH || 0) > slotH) slotMinutes += 1440; 
-
-                  let checkMinutes = rawCurrentMinutes;
-                  if (checkMinutes < (startH || 0) * 60 && ((startH || 0) > parseInt(orderAcceptanceEnd.split(':')[0] || '22'))) {
-                    checkMinutes += 1440;
-                  }
-                  
-                  const isPastCutoff = checkMinutes >= (slotMinutes - 120);
-                  const isSoldOut = !slot.is_active || booked >= slot.limit || !isStoreOpen || isPastCutoff;
-                  const isSelected = deliverySlot === slot.time;
-                  const remaining = Math.max(0, slot.limit - booked);
-
-                  return (
-                    <button
-                      key={slot.time}
-                      type="button"
-                      disabled={isSoldOut}
-                      onClick={() => setDeliverySlot(slot.time)}
-                      className={`py-3 px-3 rounded-2xl border text-center transition-all flex flex-col items-center justify-center cursor-pointer w-full ${
-                        isSoldOut
-                          ? 'bg-stone-50/40 border-stone-100 text-stone-300 cursor-not-allowed opacity-40 shadow-none'
-                          : isSelected
-                          ? 'bg-emerald-50 border-2 border-emerald-600 text-emerald-950 shadow-md'
-                          : 'bg-white hover:bg-stone-50 border border-stone-300 text-stone-800 hover:border-stone-400 hover:shadow-sm'
-                      }`}
-                    >
-                      <div className="flex items-center gap-1.5">
-                        {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>}
-                        <span className={`text-base font-extrabold ${isSelected ? 'text-emerald-950' : isSoldOut ? 'text-stone-400' : 'text-stone-800'}`}>
+                    let checkMinutes = rawCurrentMinutes;
+                    if (checkMinutes < (startH || 0) * 60 && ((startH || 0) > parseInt(orderAcceptanceEnd.split(':')[0] || '22'))) {
+                      checkMinutes += 1440;
+                    }
+                    
+                    const isPastCutoff = checkMinutes >= (slotMinutes - 120);
+                    const isSoldOut = !slot.is_active || booked >= slot.limit || !isStoreOpen || isPastCutoff;
+                    const isSelected = deliverySlot === slot.time;
+                    
+                    return (
+                      <button
+                        key={slot.time}
+                        type="button"
+                        disabled={isSoldOut}
+                        onClick={() => setDeliverySlot(slot.time)}
+                        className={`py-3.5 px-4 rounded-xl border text-left transition-all flex justify-between items-center cursor-pointer w-full ${
+                          isSoldOut
+                            ? 'bg-stone-50 border-stone-200 text-stone-400 cursor-not-allowed shadow-none'
+                            : isSelected
+                            ? 'bg-stone-900 border-stone-900 text-white shadow-md'
+                            : 'bg-white hover:bg-stone-50 border-stone-300 text-stone-800'
+                        }`}
+                      >
+                        <span className="text-sm font-black tracking-tighter">
                           {slot.time}
                         </span>
-                      </div>
-                      <span className={`text-[10px] font-bold mt-0.5 tracking-wide ${
-                        isSoldOut
-                          ? 'text-stone-300'
-                          : isSelected
-                          ? 'text-emerald-700 font-extrabold'
-                          : 'text-stone-500'
-                      }`}>
-                        {isSoldOut ? (isPastCutoff ? 'Time Over' : 'Sold Out') : `${remaining} left`}
-                      </span>
+                        <span className={`text-[9px] font-bold uppercase tracking-wider ${
+                          isSoldOut ? 'text-stone-400' : isSelected ? 'text-stone-300' : 'text-stone-500'
+                        }`}>
+                          {isSoldOut ? 'Closed' : 'Select'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="space-y-4 pt-6 border-t border-stone-100">
+                <div className="flex justify-between items-center">
+                  <label className="text-[10px] font-bold text-stone-500 uppercase tracking-widest">
+                    7. Quantity
+                  </label>
+                  <div className="flex items-center gap-4 bg-stone-50 border border-stone-200 rounded-xl p-1">
+                    <button
+                      type="button"
+                      onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+                      className="w-8 h-8 bg-white hover:bg-stone-100 border border-stone-200 rounded-lg font-black text-stone-600 flex items-center justify-center cursor-pointer transition shadow-sm"
+                    >
+                      -
                     </button>
-                  );
-                })}
+                    <span className="text-sm font-black text-stone-900 w-4 text-center font-mono">{quantity}</span>
+                    <button
+                      type="button"
+                      onClick={() => setQuantity((q) => Math.max(10, q + 1))}
+                      className="w-8 h-8 bg-white hover:bg-stone-100 border border-stone-200 rounded-lg font-black text-stone-600 flex items-center justify-center cursor-pointer transition shadow-sm"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-stone-50 rounded-xl p-4 space-y-2.5 text-xs text-stone-600 border border-stone-200">
+                  <div className="flex justify-between">
+                    <span className="font-medium text-stone-500">Breakfast Box (¥{deliveryPrice.toLocaleString()} × {quantity})</span>
+                    <span className="font-bold text-stone-900 font-mono">¥{subtotal.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-medium text-stone-500">Hotel Delivery Fee</span>
+                    <span className="font-bold text-stone-900 font-mono">¥{deliveryTotal.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between pb-1 border-b border-stone-200">
+                    <span className="font-medium text-stone-500">VAT ({vatRate}%)</span>
+                    <span className="font-bold text-stone-900 font-mono">¥{vatTotal.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between items-baseline pt-1">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-stone-800">Total</span>
+                    <span className="text-xl font-black text-stone-900 tracking-tighter font-mono">¥{totalPrice.toLocaleString()}</span>
+                  </div>
+                </div>
               </div>
+
+              <button
+                type="submit"
+                disabled={!isOrderingAvailable || isSubmitting}
+                className={`w-full py-4 rounded-xl text-[11px] font-black tracking-widest uppercase transition-all duration-200 ${
+                  !isOrderingAvailable
+                    ? 'bg-stone-200 text-stone-400 cursor-not-allowed'
+                    : 'bg-stone-900 hover:bg-stone-800 text-white shadow-md active:scale-[0.99] cursor-pointer'
+                }`}
+              >
+                {isSubmitting ? 'Processing...' : isOrderingAvailable ? 'Confirm Order' : 'Reception Closed'}
+              </button>
             </div>
-
-            <div className="bg-white rounded-3xl border border-stone-200 p-5 shadow-2xs space-y-4">
-              <div className="flex justify-between items-center">
-                <label className="text-xs font-bold text-stone-800 uppercase tracking-wider">
-                  7. Quantity / 注文数
-                </label>
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setQuantity((q) => Math.max(1, q - 1))}
-                    className="w-9 h-9 bg-stone-100 hover:bg-stone-200 border border-stone-300 rounded-xl font-black text-sm flex items-center justify-center cursor-pointer transition active:scale-95"
-                  >
-                    -
-                  </button>
-                  <span className="text-lg font-black text-stone-900 w-6 text-center font-mono">{quantity}</span>
-                  <button
-                    type="button"
-                    onClick={() => setQuantity((q) => Math.min(10, q + 1))}
-                    className="w-9 h-9 bg-stone-100 hover:bg-stone-200 border border-stone-300 rounded-xl font-black text-sm flex items-center justify-center cursor-pointer transition active:scale-95"
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-
-              <div className="pt-3 border-t border-stone-100 space-y-1.5 text-xs text-stone-600">
-                <div className="flex justify-between">
-                  <span>Onigiri Bento Box (¥{itemPrice.toLocaleString()} × {quantity}):</span>
-                  <span className="font-bold text-stone-900">¥{subtotal.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Hotel Room Delivery (客室配達料 / 一律):</span>
-                  <span className="font-bold text-stone-900">¥{deliveryTotal.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>VAT ({vatRate}% / ¥{vatAmount.toLocaleString()} × {quantity}):</span>
-                  <span className="font-bold text-stone-900">¥{vatTotal.toLocaleString()}</span>
-                </div>
-                <div className="pt-2 border-t border-stone-200 flex justify-between items-baseline">
-                  <span className="text-xs font-extrabold uppercase text-stone-700">Total / お支払い合計:</span>
-                  <span className="text-2xl font-black text-stone-900 tracking-tight">¥{totalPrice.toLocaleString()}</span>
-                </div>
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={!isOrderingAvailable || isSubmitting}
-              className={`w-full py-4 rounded-2xl text-sm font-extrabold tracking-wide uppercase shadow-lg transition active:scale-[0.99] cursor-pointer ${
-                !isOrderingAvailable
-                  ? 'bg-stone-300 text-stone-500 cursor-not-allowed shadow-none'
-                  : 'bg-emerald-700 hover:bg-emerald-800 text-white shadow-emerald-900/20'
-              }`}
-            >
-              {isSubmitting ? 'Processing Order...' : isOrderingAvailable ? `Place Order • ¥${totalPrice.toLocaleString()}` : 'Reception Closed (受付終了)'}
-            </button>
           </form>
         </main>
       </div>
