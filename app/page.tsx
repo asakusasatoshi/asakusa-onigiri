@@ -216,6 +216,8 @@ export default function OrderPage() {
 
     const enabledSlots = finalSlots.filter((s) => s.is_active);
     const slotsToApply = enabledSlots.length > 0 ? enabledSlots : finalSlots;
+    
+    slotsToApply.sort((a, b) => a.time.localeCompare(b.time));
     setActiveSlots(slotsToApply);
 
     const { data: orderData } = await supabase.from('orders').select('*');
@@ -653,7 +655,7 @@ export default function OrderPage() {
           </div>
 
           <p className="text-[11px] text-stone-500 leading-relaxed px-4">
-            We are preparing your fresh breakfast. Our delivery partner will deliver directly to your room at the scheduled time.
+            We are preparing your fresh order. Our delivery partner will deliver directly to your room at the scheduled time.
           </p>
 
           <button
@@ -839,13 +841,19 @@ export default function OrderPage() {
               </div>
 
               <div className="space-y-4 pt-6 border-t border-stone-100">
-                <div className="flex justify-between items-baseline">
-                  <label className="text-[10px] font-bold text-stone-500 uppercase tracking-widest">
+                <div>
+                  <label className="text-[10px] font-bold text-stone-500 uppercase tracking-widest block mb-2">
                     6. Delivery Slot <span className="text-rose-600">*</span>
                   </label>
+                  <div className="p-3.5 bg-stone-50 rounded-xl border border-stone-200 mb-4">
+                    <p className="text-xs font-bold text-stone-800 mb-1">When will my order arrive?</p>
+                    <p className="text-[11px] text-stone-500 leading-relaxed">
+                      Your order will arrive within the hour leading up to your selected time. Please relax in your room until we send your &quot;20-minute arrival notice&quot; via email.
+                    </p>
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-3 sm:gap-4">
                   {activeSlots.map((slot) => {
                     const booked = slotBookedBoxes[slot.time] || 0;
                     const [slotH, slotM] = slot.time.split(':').map(Number);
@@ -869,18 +877,18 @@ export default function OrderPage() {
                         type="button"
                         disabled={isSoldOut}
                         onClick={() => setDeliverySlot(slot.time)}
-                        className={`py-3.5 px-4 rounded-xl border text-left transition-all flex justify-between items-center cursor-pointer w-full ${
+                        className={`py-3 px-4 rounded-xl border transition flex justify-between items-center w-full relative overflow-hidden ${
                           isSoldOut
-                            ? 'bg-stone-50 border-stone-200 text-stone-400 cursor-not-allowed shadow-none'
+                            ? 'bg-stone-50 border-stone-200 text-stone-400 cursor-not-allowed opacity-80'
                             : isSelected
                             ? 'bg-stone-900 border-stone-900 text-white shadow-md'
-                            : 'bg-white hover:bg-stone-50 border-stone-300 text-stone-800'
+                            : 'bg-white border-stone-300 text-stone-800 shadow-sm hover:border-stone-400 hover:bg-stone-50 cursor-pointer active:translate-y-[1px]'
                         }`}
                       >
-                        <span className="text-sm font-black tracking-tighter">
+                        <span className="text-sm font-bold tracking-tighter">
                           {slot.time}
                         </span>
-                        <span className={`text-[9px] font-bold uppercase tracking-wider ${
+                        <span className={`text-[10px] font-bold uppercase tracking-wider ${
                           isSoldOut ? 'text-stone-400' : isSelected ? 'text-stone-300' : 'text-stone-500'
                         }`}>
                           {isSoldOut ? 'Closed' : 'Select'}
@@ -907,7 +915,7 @@ export default function OrderPage() {
                     <span className="text-sm font-black text-stone-900 w-4 text-center font-mono">{quantity}</span>
                     <button
                       type="button"
-                      onClick={() => setQuantity((q) => Math.max(10, q + 1))}
+                      onClick={() => setQuantity((q) => Math.min(10, q + 1))}
                       className="w-8 h-8 bg-white hover:bg-stone-100 border border-stone-200 rounded-lg font-black text-stone-600 flex items-center justify-center cursor-pointer transition shadow-sm"
                     >
                       +

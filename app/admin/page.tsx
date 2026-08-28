@@ -670,6 +670,9 @@ export default function AdminDashboard() {
       if (Array.isArray(setData.delivery_slots) && setData.delivery_slots.length > 0) parsedSlots = setData.delivery_slots;
       else if (typeof setData.delivery_slots === 'string') { try { parsedSlots = JSON.parse(setData.delivery_slots); } catch { parsedSlots = DEFAULT_SLOTS; } }
 
+      // ★ データ取得時に時系列ソートを適用
+      parsedSlots.sort((a, b) => a.time.localeCompare(b.time));
+
       let derivedVatRate = 10;
       if (setData.vat_rate != null) derivedVatRate = setData.vat_rate;
       else if (setData.tax_amount != null && setData.item_price) derivedVatRate = Math.round((setData.tax_amount / setData.item_price) * 100);
@@ -696,6 +699,12 @@ export default function AdminDashboard() {
       calData.forEach((row: any) => {
         let customSlots = row.custom_slots;
         if (typeof customSlots === 'string') { try { customSlots = JSON.parse(customSlots); } catch { customSlots = null; } }
+        
+        // ★ カレンダーのカスタムスロットも時系列ソート
+        if (Array.isArray(customSlots)) {
+          customSlots.sort((a: any, b: any) => a.time.localeCompare(b.time));
+        }
+
         calMap[row.date] = { ...row, custom_slots: customSlots };
       });
       setCalendarData(calMap);
@@ -738,8 +747,12 @@ export default function AdminDashboard() {
   const todayCalendar = calendarData[todayBizDate];
 
   const effectiveTodaySlots: SlotConfig[] = useMemo(() => {
-    if (todayCalendar && Array.isArray(todayCalendar.custom_slots) && todayCalendar.custom_slots.length > 0) return todayCalendar.custom_slots;
-    return settings.delivery_slots && settings.delivery_slots.length > 0 ? settings.delivery_slots : DEFAULT_SLOTS;
+    let slots = settings.delivery_slots && settings.delivery_slots.length > 0 ? settings.delivery_slots : DEFAULT_SLOTS;
+    if (todayCalendar && Array.isArray(todayCalendar.custom_slots) && todayCalendar.custom_slots.length > 0) {
+      slots = todayCalendar.custom_slots;
+    }
+    // ★ 念のためここでも時系列ソートを保証
+    return [...slots].sort((a, b) => a.time.localeCompare(b.time));
   }, [todayCalendar, settings.delivery_slots]);
 
   const todayOperationsOrders = useMemo(() => {
@@ -904,9 +917,13 @@ export default function AdminDashboard() {
     if (existing) {
       setModalIsOpen(existing.is_open);
       if (existing.custom_slots && existing.custom_slots.length > 0) {
-        setModalUseCustomSlots(true); setModalSlots(JSON.parse(JSON.stringify(existing.custom_slots)));
+        setModalUseCustomSlots(true); 
+        // ★ モーダルを開く時にもソート
+        setModalSlots(JSON.parse(JSON.stringify(existing.custom_slots)).sort((a: any, b: any) => a.time.localeCompare(b.time)));
       } else {
-        setModalUseCustomSlots(false); setModalSlots(JSON.parse(JSON.stringify(settings.delivery_slots)));
+        setModalUseCustomSlots(false); 
+        // ★ モーダルを開く時にもソート
+        setModalSlots(JSON.parse(JSON.stringify(settings.delivery_slots)).sort((a: any, b: any) => a.time.localeCompare(b.time)));
       }
       setModalTargetStock(existing.target_stock != null ? existing.target_stock : '');
       if (existing.custom_cutoff_time || existing.custom_acceptance_start || existing.custom_acceptance_end) {
@@ -924,7 +941,9 @@ export default function AdminDashboard() {
       setModalWeather(existing.weather || '');
       setModalNote(existing.note || '');
     } else {
-      setModalIsOpen(true); setModalUseCustomSlots(false); setModalSlots(JSON.parse(JSON.stringify(settings.delivery_slots)));
+      setModalIsOpen(true); setModalUseCustomSlots(false); 
+      // ★ モーダルを開く時にもソート
+      setModalSlots(JSON.parse(JSON.stringify(settings.delivery_slots)).sort((a: any, b: any) => a.time.localeCompare(b.time)));
       setModalTargetStock(''); setModalUseCustomHours(false);
       setModalCutoffTime(settings.business_cutoff_time); setModalAcceptStart(settings.order_acceptance_start); setModalAcceptEnd(settings.order_acceptance_end);
       setModalRadius(''); setModalWeather(''); setModalNote('');
@@ -1029,14 +1048,24 @@ export default function AdminDashboard() {
     if (error) { setSaveErrorMessage('Error saving settings: ' + error.message); } else { setShowSuccessModal(true); fetchLiveOperationsData(true); }
   };
 
-  const handleAddDefaultSlot = () => setSettings((prev) => ({ ...prev, delivery_slots: [...prev.delivery_slots, { time: '11:00', limit: 10, is_active: true }] }));
+  // ★ 新規追加時にもソートを適用
+  const handleAddDefaultSlot = () => setSettings((prev) => {
+    const updated = [...prev.delivery_slots, { time: '11:00', limit: 10, is_active: true }];
+    return { ...prev, delivery_slots: updated.sort((a, b) => a.time.localeCompare(b.time)) };
+  });
+
+  // ★ 変更時にもソートを適用
   const handleUpdateDefaultSlot = (index: number, field: keyof SlotConfig, val: any) => {
     setSettings((prev) => {
       const updated = [...prev.delivery_slots];
       updated[index] = { ...updated[index], [field]: val };
+      if (field === 'time') {
+        updated.sort((a, b) => a.time.localeCompare(b.time));
+      }
       return { ...prev, delivery_slots: updated };
     });
   };
+
   const handleDeleteDefaultSlot = (index: number) => {
     if (settings.delivery_slots.length <= 1) return alert('You must keep at least 1 delivery slot.');
     setSettings((prev) => ({ ...prev, delivery_slots: prev.delivery_slots.filter((_, i) => i !== index) }));
@@ -1079,7 +1108,6 @@ export default function AdminDashboard() {
     }
   };
 
-  // ★ 新しいステータス判定ロジック ★
   const activeAcceptanceStart = todayCalendar?.custom_acceptance_start || settings.order_acceptance_start || '07:00';
   const activeAcceptanceEnd = todayCalendar?.custom_acceptance_end || settings.order_acceptance_end || '22:00';
 
@@ -1710,22 +1738,40 @@ export default function AdminDashboard() {
                             <div className="space-y-2 pt-2 border-t border-stone-200">
                               {modalSlots.map((slot, idx) => (
                                 <div key={idx} className="flex items-center gap-2 bg-white p-2.5 rounded-xl border border-stone-200 text-xs">
-                                  <select value={slot.time} onChange={(e) => { const next = [...modalSlots]; next[idx].time = e.target.value; setModalSlots(next); }} className="w-24 px-2 py-1.5 border border-stone-300 rounded-lg text-xs font-bold bg-stone-50 text-stone-800 outline-none focus:border-stone-900 cursor-pointer">
+                                  <select value={slot.time} onChange={(e) => { 
+                                    const next = [...modalSlots]; 
+                                    next[idx].time = e.target.value; 
+                                    setModalSlots(next.sort((a, b) => a.time.localeCompare(b.time))); 
+                                  }} className="w-24 px-2 py-1.5 border border-stone-300 rounded-lg text-xs font-bold bg-stone-50 text-stone-800 outline-none focus:border-stone-900 cursor-pointer">
                                     {TIME_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
                                     {!TIME_OPTIONS.includes(slot.time) && <option key={slot.time} value={slot.time}>{slot.time}</option>}
                                   </select>
                                   <div className="flex items-center gap-1">
                                     <span className="text-[10px] text-stone-400">Max:</span>
-                                    <input type="number" value={slot.limit} onChange={(e) => { const next = [...modalSlots]; next[idx].limit = Number(e.target.value); setModalSlots(next); }} className="w-14 px-2 py-1 border border-stone-300 rounded-lg text-xs font-bold text-center outline-none focus:border-stone-900" />
+                                    <input type="number" value={slot.limit} onChange={(e) => { 
+                                      const next = [...modalSlots]; 
+                                      next[idx].limit = Number(e.target.value); 
+                                      setModalSlots(next); 
+                                    }} className="w-14 px-2 py-1 border border-stone-300 rounded-lg text-xs font-bold text-center outline-none focus:border-stone-900" />
                                     <span className="text-[10px] text-stone-400">bxs</span>
                                   </div>
-                                  <button onClick={() => { const next = [...modalSlots]; next[idx].is_active = !next[idx].is_active; setModalSlots(next); }} className={`px-2 py-1 rounded-md text-[10px] font-bold border ${slot.is_active ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-stone-100 text-stone-400 border-stone-200'}`}>
+                                  <button onClick={() => { 
+                                    const next = [...modalSlots]; 
+                                    next[idx].is_active = !next[idx].is_active; 
+                                    setModalSlots(next); 
+                                  }} className={`px-2 py-1 rounded-md text-[10px] font-bold border ${slot.is_active ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-stone-100 text-stone-400 border-stone-200'}`}>
                                     {slot.is_active ? 'Active' : 'Off'}
                                   </button>
-                                  <button onClick={() => { if (modalSlots.length <= 1) return; setModalSlots(modalSlots.filter((_, i) => i !== idx)); }} className="text-stone-300 hover:text-rose-600 font-bold ml-auto px-1">🗑️</button>
+                                  <button onClick={() => { 
+                                    if (modalSlots.length <= 1) return; 
+                                    setModalSlots(modalSlots.filter((_, i) => i !== idx)); 
+                                  }} className="text-stone-300 hover:text-rose-600 font-bold ml-auto px-1">🗑️</button>
                                 </div>
                               ))}
-                              <button onClick={() => setModalSlots([...modalSlots, { time: '11:00', limit: 10, is_active: true }])} className="w-full py-2 bg-stone-200/80 hover:bg-stone-300 text-stone-800 rounded-xl text-xs font-bold transition">＋ Add Custom Slot</button>
+                              <button onClick={() => {
+                                const next = [...modalSlots, { time: '11:00', limit: 10, is_active: true }];
+                                setModalSlots(next.sort((a, b) => a.time.localeCompare(b.time)));
+                              }} className="w-full py-2 bg-stone-200/80 hover:bg-stone-300 text-stone-800 rounded-xl text-xs font-bold transition">＋ Add Custom Slot</button>
                             </div>
                           ) : (
                             <div className="text-[11px] text-stone-400 p-2 bg-white rounded-xl border border-dashed border-stone-200 text-center">This date uses the default {settings.delivery_slots.length} slots configured in Settings tab.</div>
