@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import AnalyticsPage from './analytics';
+import InventoryPage from './inventory';
 
 interface Order {
   id: number;
@@ -464,7 +465,7 @@ function RegisteredHotelRow({
 }
 
 export default function AdminDashboard() {
-  const [activeTab, setActiveTab] = useState<'operations' | 'history' | 'calendar' | 'settings' | 'analytics'>('operations');
+  const [activeTab, setActiveTab] = useState<'operations' | 'history' | 'calendar' | 'settings' | 'analytics' | 'inventory'>('operations');
   const [orders, setOrders] = useState<Order[]>([]);
 
   const [hotels, setHotels] = useState<any[]>([]);
@@ -1172,6 +1173,7 @@ const getHotelDisplayName = (order: Order) => {
                 <button onClick={() => setActiveTab('calendar')} className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer whitespace-nowrap ${activeTab === 'calendar' ? 'bg-white text-stone-900 shadow-sm border border-stone-200' : 'text-stone-500 hover:text-stone-800'}`}>📅 Calendar</button>
                 <button onClick={() => setActiveTab('settings')} className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer whitespace-nowrap ${activeTab === 'settings' ? 'bg-white text-stone-900 shadow-sm border border-stone-200' : 'text-stone-500 hover:text-stone-800'}`}>⚙️ Settings</button>
                 <button onClick={() => setActiveTab('analytics')} className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer whitespace-nowrap ${activeTab === 'analytics' ? 'bg-white text-stone-900 shadow-sm border border-stone-200' : 'text-stone-500 hover:text-stone-800'}`}>📊 Analytics</button>
+                <button onClick={() => setActiveTab('inventory')} className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer whitespace-nowrap ${activeTab === 'inventory' ? 'bg-white text-stone-900 shadow-sm border border-stone-200' : 'text-stone-500 hover:text-stone-800'}`}>🗂️ Inventory</button>
               </div>
 
               <div className="flex items-center gap-2">
@@ -2087,6 +2089,13 @@ const getHotelDisplayName = (order: Order) => {
               hotels={hotels}
               todayCalendar={todayCalendar}
             />
+          )}
+
+          {/* =========================================
+              6. INVENTORY TAB
+              ========================================= */}
+          {activeTab === 'inventory' && (
+            <InventoryPage />
           )}
 
         </div>
