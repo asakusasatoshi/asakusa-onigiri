@@ -1071,10 +1071,10 @@ export default function AdminDashboard() {
     setSettings((prev) => ({ ...prev, delivery_slots: prev.delivery_slots.filter((_, i) => i !== index) }));
   };
 
-  const getHotelDisplayName = (order: Order) => {
+const getHotelDisplayName = (order: Order) => {
     const raw = order.hotel_name || order.hotel || order.hotel_id || '';
     const found = hotels.find((h) => String(h.id) === String(raw) || h.name === raw || h.name_ja === raw);
-    if (found) return `${found.name_ja || found.name}`;
+    if (found) return found.name || found.name_ja;
     return raw || 'Hotel Unspecified';
   };
 
@@ -1142,7 +1142,7 @@ export default function AdminDashboard() {
     if (isPastCutoff) return { label: '× TIME OVER', color: 'bg-stone-200 text-stone-500 border-stone-300', boxBg: 'bg-stone-50 opacity-80' };
     if (booked >= slot.limit) return { label: '× SOLD OUT', color: 'bg-rose-100 text-rose-700 border-rose-300', boxBg: 'bg-rose-50/50' };
     if (!isMasterOpen) return { label: '× OFF (Store Closed)', color: 'bg-stone-800 text-stone-100 border-stone-900', boxBg: 'bg-stone-200/50 opacity-70' };
-    if (!isWithinAcceptance) return { label: `× STANDBY (Opens at ${activeAcceptanceStart})`, color: 'bg-stone-100 text-stone-500 border-stone-300', boxBg: 'bg-stone-50' };
+    if (!isWithinAcceptance) return { label: '× STANDBY', color: 'bg-stone-100 text-stone-500 border-stone-300', boxBg: 'bg-stone-50' };
     
     return { label: '○ OPEN', color: 'bg-emerald-100 text-emerald-800 border-emerald-300', boxBg: 'bg-white border-emerald-300 shadow-sm' };
   };
