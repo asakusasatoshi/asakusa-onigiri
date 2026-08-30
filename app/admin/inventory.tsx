@@ -160,7 +160,7 @@ export default function InventoryPage() {
   useEffect(() => { fetchData(); }, []);
 
   // ==========================================
-  // Master & Purchase & Adjust Logic (省略せずに記載)
+  // Master & Purchase & Adjust Logic
   // ==========================================
   const resetMasterForm = () => { setNewName(''); setNewCategory('food'); setNewBaseUnit('g'); setNewCostMultiplier(100); };
   const duplicateWarning = useMemo(() => {
@@ -904,9 +904,203 @@ export default function InventoryPage() {
       )}
 
       {/* =========================================
-          MODAL: Add Material, Adjust Stock (省略、前述コードと同一)
-          ※制限回避のため上部に展開済み
+          MODAL: Add Material
           ========================================= */}
+      {isAddModalOpen && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-stone-200 shadow-2xl max-w-sm w-full p-6 space-y-5">
+            <div className="flex justify-between items-start border-b border-stone-100 pb-3">
+              <h3 className="text-lg font-bold text-stone-900">New Material</h3>
+              <button onClick={() => { setIsAddModalOpen(false); resetMasterForm(); }} className="text-stone-400 hover:text-stone-700 text-lg font-bold cursor-pointer">✕</button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-bold text-stone-600 mb-1.5">Material Name</label>
+                <input type="text" value={newName} onChange={(e) => setNewName(e.target.value)} className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-sm font-bold outline-none" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1.5">Category</label>
+                  <select value={newCategory} onChange={(e) => setNewCategory(e.target.value as MaterialCategory)} className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-sm font-bold outline-none">
+                    <option value="food">Food</option>
+                    <option value="packaging">Packaging</option>
+                    <option value="others">Others</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1.5">Base Unit</label>
+                  <select value={newBaseUnit} onChange={(e) => setNewBaseUnit(e.target.value as BaseUnit)} className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-sm font-bold outline-none">
+                    <option value="g">g (Grams)</option>
+                    <option value="ml">ml (Milliliters)</option>
+                    <option value="cm">cm (Centimeters)</option>
+                    <option value="pcs">pcs (Pieces)</option>
+                  </select>
+                </div>
+              </div>
+              {duplicateWarning && <div className="text-[10px] text-rose-600 font-bold bg-rose-50 p-2 rounded-lg">{duplicateWarning}</div>}
+            </div>
+            <div className="flex gap-2 pt-2 border-t border-stone-100">
+              <button onClick={() => { setIsAddModalOpen(false); resetMasterForm(); }} className="flex-1 py-3 bg-white border border-stone-200 hover:bg-stone-50 text-stone-600 rounded-xl text-xs font-bold cursor-pointer">Cancel</button>
+              <button onClick={handleSaveMaterial} disabled={isSaving || !newName.trim() || !!duplicateWarning} className="flex-1 py-3 bg-stone-900 hover:bg-stone-800 text-white rounded-xl text-xs font-bold shadow-sm cursor-pointer disabled:opacity-50">Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================
+          MODAL: Add Purchase (Receipt Entry)
+          ========================================= */}
+      {isPurchaseModalOpen && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-stone-200 shadow-2xl max-w-2xl w-full p-6 space-y-5 flex flex-col max-h-[90vh]">
+            <div className="flex justify-between items-start border-b border-stone-100 pb-3 shrink-0">
+              <div>
+                <h3 className="text-lg font-bold text-stone-900">Add Purchase (Receipt Entry)</h3>
+                <p className="text-[10px] font-bold text-stone-400 mt-0.5 uppercase tracking-wide">Enter items to update stock & avg cost</p>
+              </div>
+              <button onClick={() => { setIsPurchaseModalOpen(false); resetPurchaseForm(); }} className="text-stone-400 hover:text-stone-700 text-lg font-bold cursor-pointer">✕</button>
+            </div>
+            
+            <div className="overflow-y-auto pr-2 space-y-4 flex-1 custom-scrollbar">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Date</label>
+                  <input type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} className="w-full px-2 py-1.5 bg-stone-50 border border-stone-300 rounded-lg text-xs font-bold outline-none" />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Receipt No.</label>
+                  <input type="text" placeholder="#001" value={receiptNo} onChange={(e) => setReceiptNo(e.target.value)} className="w-full px-2 py-1.5 bg-stone-50 border border-stone-300 rounded-lg text-xs font-bold outline-none" />
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Vendor/Store</label>
+                  <input type="text" placeholder="e.g. 西友, OKストア" value={receiptVendor} onChange={(e) => setReceiptVendor(e.target.value)} className="w-full px-2 py-1.5 bg-stone-50 border border-stone-300 rounded-lg text-xs font-bold outline-none" />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {purchaseItems.map(item => (
+                  <div key={item.uid} className="flex flex-wrap md:flex-nowrap items-center gap-2 bg-stone-50 p-2 rounded-xl border border-stone-200">
+                    <div className="w-full md:flex-1">
+                      <select value={item.materialId} onChange={(e) => handleMaterialChange(item.uid, e.target.value)} className="w-full px-2 py-1.5 bg-white border border-stone-300 rounded-lg text-xs font-bold text-stone-800 outline-none cursor-pointer">
+                        <option value="">-- Select Material --</option>
+                        {materials.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                      </select>
+                    </div>
+                    <div className="w-1/3 md:w-24 relative">
+                      <input type="text" placeholder="Price" value={item.price} onChange={(e) => handleNumberInput(item.uid, 'price', e.target.value)} className="w-full px-2 py-1.5 bg-white border border-stone-300 rounded-lg text-xs font-mono font-bold outline-none pr-4 text-right" />
+                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-stone-400 font-bold">¥</span>
+                    </div>
+                    <div className="w-1/3 md:w-24">
+                      <input type="text" placeholder="Amount" value={item.amount} onChange={(e) => handleNumberInput(item.uid, 'amount', e.target.value)} className="w-full px-2 py-1.5 bg-white border border-stone-300 rounded-lg text-xs font-mono font-bold outline-none text-right" />
+                    </div>
+                    <div className="w-1/4 md:w-20">
+                      <select value={item.displayUnit} onChange={(e) => handleDisplayUnitChange(item.uid, e.target.value)} className="w-full px-1 py-1.5 bg-white border border-stone-300 rounded-lg text-xs font-bold text-stone-600 outline-none cursor-pointer">
+                        <option value="g">g</option>
+                        <option value="kg">kg</option>
+                        <option value="ml">ml</option>
+                        <option value="L">L</option>
+                        <option value="pcs">pcs</option>
+                        <option value="cm">cm</option>
+                        <option value="m">m</option>
+                      </select>
+                    </div>
+                    <button onClick={() => handleRemovePurchaseRow(item.uid)} disabled={purchaseItems.length === 1} className="w-auto p-1.5 text-stone-400 hover:text-rose-500 disabled:opacity-30 cursor-pointer">✕</button>
+                  </div>
+                ))}
+                <button onClick={handleAddPurchaseRow} className="w-full py-2 border-2 border-dashed border-stone-200 hover:border-stone-400 text-stone-400 hover:text-stone-700 rounded-xl text-xs font-bold transition cursor-pointer">＋ Add Item to Receipt</button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <div>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Input Price Type</label>
+                  <select value={isTaxIncluded ? 'included' : 'excluded'} onChange={(e) => setIsTaxIncluded(e.target.value === 'included')} className="w-full px-2 py-1.5 bg-stone-50 border border-stone-300 rounded-lg text-xs font-bold outline-none">
+                    <option value="excluded">Tax Excluded (税抜入力 - 自動加算)</option>
+                    <option value="included">Tax Included (税込入力)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Shipping Fee (送料等 税込)</label>
+                  <div className="relative">
+                    <input type="text" placeholder="0" value={shippingFee} onChange={(e) => { const v = e.target.value.replace(/[^0-9]/g, ''); setShippingFee(v === '' ? '' : Number(v)); }} className="w-full px-2 py-1.5 pl-6 bg-stone-50 border border-stone-300 rounded-lg text-xs font-mono font-bold outline-none text-right" />
+                    <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-stone-400 font-bold">¥</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-stone-900 rounded-xl p-4 shrink-0 flex items-center justify-between shadow-md">
+              <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">Calculated Receipt Total (Incl. Tax)</span>
+              <span className="text-2xl font-black text-white font-mono leading-none">¥{receiptTotal.toLocaleString()}</span>
+            </div>
+            <div className="flex gap-2 pt-2 border-t border-stone-100 shrink-0">
+              <button onClick={() => { setIsPurchaseModalOpen(false); resetPurchaseForm(); }} className="flex-1 py-3 bg-white border border-stone-200 hover:bg-stone-50 text-stone-600 rounded-xl text-xs font-bold cursor-pointer">Cancel</button>
+              <button onClick={handleSavePurchase} disabled={isSaving || !receiptNo.trim() || !receiptVendor.trim()} className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm cursor-pointer disabled:opacity-50">Save Receipt & Update Stock</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================
+          MODAL: Adjust Stock
+          ========================================= */}
+      {isAdjustModalOpen && adjustTarget && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-stone-200 shadow-2xl max-w-sm w-full p-6 space-y-5 flex flex-col">
+            <div className="flex justify-between items-start border-b border-stone-100 pb-3 shrink-0">
+              <div>
+                <h3 className="text-lg font-bold text-stone-900">Adjust Stock</h3>
+                <p className="text-[10px] font-bold text-stone-400 mt-0.5">{adjustTarget.name}</p>
+              </div>
+              <button onClick={() => setIsAdjustModalOpen(false)} className="text-stone-400 hover:text-stone-700 text-lg font-bold cursor-pointer">✕</button>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Adjustment Type</label>
+                  <select value={adjustType} onChange={(e) => setAdjustType(e.target.value as AdjustmentType)} className="w-full px-2 py-1.5 bg-stone-50 border border-stone-300 rounded-lg text-xs font-bold outline-none">
+                    <option value="waste">Waste (廃棄/消費)</option>
+                    <option value="stocktake">Stocktake (棚卸/実数入力)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1">Date</label>
+                  <input type="date" value={adjustDate} onChange={(e) => setAdjustDate(e.target.value)} className="w-full px-2 py-1.5 bg-stone-50 border border-stone-300 rounded-lg text-xs font-bold outline-none" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-stone-600 mb-1">
+                  {adjustType === 'waste' ? 'Amount to Deduct' : 'Actual Stock Amount'}
+                </label>
+                <div className="relative">
+                  <input type="number" placeholder="0" value={adjustAmount} onChange={(e) => setAdjustAmount(e.target.value === '' ? '' : Number(e.target.value))} className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-lg font-mono font-bold outline-none text-right pr-12" />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-stone-400">{adjustTarget.base_unit}</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-stone-600 mb-1">Reason / Note</label>
+                <input type="text" placeholder="e.g. 期限切れ廃棄, 月末棚卸" value={adjustReason} onChange={(e) => setAdjustReason(e.target.value)} className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-bold outline-none" />
+              </div>
+
+              <div className="bg-stone-50 p-3 rounded-xl border border-stone-200 text-center">
+                <div className="text-[10px] font-bold text-stone-500 uppercase">Projected Stock After Adjustment</div>
+                <div className="text-xl font-black text-stone-900 font-mono mt-1">{calculateNewStock()} {adjustTarget.base_unit}</div>
+                <div className="text-[10px] text-stone-400 mt-1">
+                  Difference: <span className={calculateNewStock() - adjustTarget.current_stock < 0 ? 'text-rose-600 font-bold' : 'text-emerald-600 font-bold'}>{calculateNewStock() - adjustTarget.current_stock > 0 ? '+' : ''}{calculateNewStock() - adjustTarget.current_stock} {adjustTarget.base_unit}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-2 border-t border-stone-100 shrink-0">
+              <button onClick={() => setIsAdjustModalOpen(false)} className="flex-1 py-3 bg-white border border-stone-200 hover:bg-stone-50 text-stone-600 rounded-xl text-xs font-bold cursor-pointer">Cancel</button>
+              <button onClick={handleSaveAdjustment} disabled={isSaving || adjustAmount === '' || !adjustReason.trim()} className="flex-1 py-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-sm cursor-pointer disabled:opacity-50">Confirm Adjust</button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
