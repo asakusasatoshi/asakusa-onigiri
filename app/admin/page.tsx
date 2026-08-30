@@ -1264,8 +1264,12 @@ const getHotelDisplayName = (order: Order) => {
                   <div>
                     <div className="flex justify-between items-center mb-3">
                       <span className="text-xs font-bold text-stone-700 uppercase tracking-wider">DELIVERY SLOTS & INTAKE STATUS</span>
-                      <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${isMasterOpen ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-rose-50 text-rose-700 border-rose-300'}`}>
-                        {isMasterOpen ? '● STORE: OPEN' : '✕ STORE: CLOSED'}
+                      <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${isMasterOpen && isWithinAcceptance ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-stone-50 text-stone-500 border-stone-200'}`}>
+                        {isMasterOpen && isWithinAcceptance 
+                          ? '● SITE: OPEN' 
+                          : isMasterOpen && !isWithinAcceptance 
+                            ? `✕ SITE: CLOSED (Opens at ${activeAcceptanceStart})` 
+                            : '✕ SITE: CLOSED'}
                       </span>
                     </div>
 
