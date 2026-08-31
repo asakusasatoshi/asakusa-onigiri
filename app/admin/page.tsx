@@ -54,6 +54,24 @@ interface CalendarDay {
   note?: string | null;
 }
 
+interface Material {
+  id: string;
+  name: string;
+  base_unit: string;
+  current_stock: number;
+  alert_threshold: number | null;
+}
+
+interface OnlineOrder {
+  id: string;
+  material_id: string;
+  order_id: string;
+  vendor: string;
+  amount: number;
+  expected_date: string;
+  status: string;
+}
+
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'
@@ -469,6 +487,9 @@ export default function AdminDashboard() {
   const [orders, setOrders] = useState<Order[]>([]);
 
   const [hotels, setHotels] = useState<any[]>([]);
+  const [materials, setMaterials] = useState<Material[]>([]);
+  const [onlineOrders, setOnlineOrders] = useState<OnlineOrder[]>([]);
+
   const [newHotelName, setNewHotelName] = useState('');
   const [newHotelNameJa, setNewHotelNameJa] = useState('');
   const [newHotelArea, setNewHotelArea] = useState('Asakusa 1 Area');
@@ -508,10 +529,11 @@ export default function AdminDashboard() {
     return 0;
   });
 
+  // 初期値の current_stock を 0 に変更
   const [inventory, setInventory] = useState<StoreInventory>({
     target_date: getBusinessDateStr(),
     target_stock: 10,
-    current_stock: 10,
+    current_stock: 0,
     sold_count: 0,
   });
   const [soldOutLogs, setSoldOutLogs] = useState<string[]>([]);
@@ -671,7 +693,6 @@ export default function AdminDashboard() {
       if (Array.isArray(setData.delivery_slots) && setData.delivery_slots.length > 0) parsedSlots = setData.delivery_slots;
       else if (typeof setData.delivery_slots === 'string') { try { parsedSlots = JSON.parse(setData.delivery_slots); } catch { parsedSlots = DEFAULT_SLOTS; } }
 
-      // ★ データ取得時に時系列ソートを適用
       parsedSlots.sort((a, b) => a.time.localeCompare(b.time));
 
       let derivedVatRate = 10;
@@ -700,12 +721,7 @@ export default function AdminDashboard() {
       calData.forEach((row: any) => {
         let customSlots = row.custom_slots;
         if (typeof customSlots === 'string') { try { customSlots = JSON.parse(customSlots); } catch { customSlots = null; } }
-        
-        // ★ カレンダーのカスタムスロットも時系列ソート
-        if (Array.isArray(customSlots)) {
-          customSlots.sort((a: any, b: any) => a.time.localeCompare(b.time));
-        }
-
+        if (Array.isArray(customSlots)) customSlots.sort((a: any, b: any) => a.time.localeCompare(b.time));
         calMap[row.date] = { ...row, custom_slots: customSlots };
       });
       setCalendarData(calMap);
@@ -726,13 +742,22 @@ export default function AdminDashboard() {
     const { data: invData } = await supabase.from('store_inventory').select('*').eq('target_date', currentBizDate).maybeSingle();
     if (invData) setInventory(invData);
     else {
-      const initInv = { target_date: currentBizDate, target_stock: 10, current_stock: 10, sold_count: 0 };
+      // データベース登録時の初期 current_stock も 0 に変更。Target はマスター設定を参照。
+      const initTarget = masterInfo?.currentSettings?.default_target_stock ?? 10;
+      const initInv = { target_date: currentBizDate, target_stock: initTarget, current_stock: 0, sold_count: 0 };
       const { data: createdInv } = await supabase.from('store_inventory').insert([initInv]).select().maybeSingle();
       if (createdInv) setInventory(createdInv);
     }
 
     const { data: logData } = await supabase.from('sold_out_logs').select('sold_at').eq('date', currentBizDate).order('id', { ascending: true });
     if (logData) setSoldOutLogs(logData.map((l: any) => l.sold_at));
+
+    // Fetch Materials & Online Orders for the Ticker
+    const { data: matData } = await supabase.from('materials').select('id, name, base_unit, current_stock, alert_threshold').eq('is_archived', false);
+    if (matData) setMaterials(matData);
+
+    const { data: ooData } = await supabase.from('online_orders').select('*').eq('status', 'pending');
+    if (ooData) setOnlineOrders(ooData);
 
     setIsLoading(false);
   }, [fetchMasterSettings]);
@@ -752,7 +777,6 @@ export default function AdminDashboard() {
     if (todayCalendar && Array.isArray(todayCalendar.custom_slots) && todayCalendar.custom_slots.length > 0) {
       slots = todayCalendar.custom_slots;
     }
-    // ★ 念のためここでも時系列ソートを保証
     return [...slots].sort((a, b) => a.time.localeCompare(b.time));
   }, [todayCalendar, settings.delivery_slots]);
 
@@ -804,6 +828,19 @@ export default function AdminDashboard() {
         return a.id - b.id;
       });
   }, [todayOperationsOrders, opStatusFilter, opSlotFilter]);
+
+  // Ticker Logic
+  const tickerItems = useMemo(() => {
+    const lowStockItems = materials.filter(m => m.alert_threshold !== null && m.current_stock < m.alert_threshold);
+    const alerts = lowStockItems.map(m => `[⚠️ LOW STOCK] ${m.name} (Remaining: ${m.current_stock}${m.base_unit})`);
+    
+    const transits = onlineOrders.map(oo => {
+      const mat = materials.find(m => m.id === oo.material_id);
+      return `[🚚 IN TRANSIT] ${mat?.name || 'Unknown'} ${oo.amount}${mat?.base_unit || ''} (${oo.vendor} / #${oo.order_id}) Expected ${oo.expected_date}`;
+    });
+
+    return [...alerts, ...transits];
+  }, [materials, onlineOrders]);
 
   useEffect(() => {
     if (!isAudioEnabled) return;
@@ -919,11 +956,9 @@ export default function AdminDashboard() {
       setModalIsOpen(existing.is_open);
       if (existing.custom_slots && existing.custom_slots.length > 0) {
         setModalUseCustomSlots(true); 
-        // ★ モーダルを開く時にもソート
         setModalSlots(JSON.parse(JSON.stringify(existing.custom_slots)).sort((a: any, b: any) => a.time.localeCompare(b.time)));
       } else {
         setModalUseCustomSlots(false); 
-        // ★ モーダルを開く時にもソート
         setModalSlots(JSON.parse(JSON.stringify(settings.delivery_slots)).sort((a: any, b: any) => a.time.localeCompare(b.time)));
       }
       setModalTargetStock(existing.target_stock != null ? existing.target_stock : '');
@@ -943,7 +978,6 @@ export default function AdminDashboard() {
       setModalNote(existing.note || '');
     } else {
       setModalIsOpen(true); setModalUseCustomSlots(false); 
-      // ★ モーダルを開く時にもソート
       setModalSlots(JSON.parse(JSON.stringify(settings.delivery_slots)).sort((a: any, b: any) => a.time.localeCompare(b.time)));
       setModalTargetStock(''); setModalUseCustomHours(false);
       setModalCutoffTime(settings.business_cutoff_time); setModalAcceptStart(settings.order_acceptance_start); setModalAcceptEnd(settings.order_acceptance_end);
@@ -1049,13 +1083,11 @@ export default function AdminDashboard() {
     if (error) { setSaveErrorMessage('Error saving settings: ' + error.message); } else { setShowSuccessModal(true); fetchLiveOperationsData(true); }
   };
 
-  // ★ 新規追加時にもソートを適用
   const handleAddDefaultSlot = () => setSettings((prev) => {
     const updated = [...prev.delivery_slots, { time: '11:00', limit: 10, is_active: true }];
     return { ...prev, delivery_slots: updated.sort((a, b) => a.time.localeCompare(b.time)) };
   });
 
-  // ★ 変更時にもソートを適用
   const handleUpdateDefaultSlot = (index: number, field: keyof SlotConfig, val: any) => {
     setSettings((prev) => {
       const updated = [...prev.delivery_slots];
@@ -1072,7 +1104,7 @@ export default function AdminDashboard() {
     setSettings((prev) => ({ ...prev, delivery_slots: prev.delivery_slots.filter((_, i) => i !== index) }));
   };
 
-const getHotelDisplayName = (order: Order) => {
+  const getHotelDisplayName = (order: Order) => {
     const raw = order.hotel_name || order.hotel || order.hotel_id || '';
     const found = hotels.find((h) => String(h.id) === String(raw) || h.name === raw || h.name_ja === raw);
     if (found) return found.name || found.name_ja;
@@ -1154,6 +1186,18 @@ const getHotelDisplayName = (order: Order) => {
 
   return (
     <>
+      <style>{`
+        @keyframes ticker {
+          0% { transform: translateX(0); }
+          100% { transform: translateX(-100%); }
+        }
+        .animate-ticker {
+          animation: ticker 15s linear infinite;
+          display: inline-block;
+          padding-left: 100%;
+        }
+      `}</style>
+
       <div className="min-h-screen bg-[#f5f5f4] text-stone-800 font-sans pb-20">
 
         {/* 上部ヘッダー ＆ タブバー */}
@@ -1202,17 +1246,38 @@ const getHotelDisplayName = (order: Order) => {
           {activeTab === 'operations' && (
             <div className="space-y-6">
               
-              {/* ★ 営業日の明記セクション（修正版） */}
-              <div className="flex items-baseline gap-3 pb-2 border-b border-stone-200">
-                <span className="text-[11px] font-bold text-stone-500 uppercase tracking-widest">Active Business Date</span>
-                <span className="text-xl font-black text-stone-900 font-mono tracking-tighter">
-                  {(() => {
-                    const [y, m, d] = todayBizDate.split('-');
-                    const dateObj = new Date(Number(y), Number(m) - 1, Number(d));
-                    const weekday = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'][dateObj.getDay()];
-                    return `${y}.${m}.${d} (${weekday})`;
-                  })()}
-                </span>
+              {/* ★ 営業日の明記 ＆ 電光掲示板（ティッカー） */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pb-2 border-b border-stone-200 items-center">
+                <div className="flex items-baseline gap-3 shrink-0">
+                  <span className="text-[11px] font-bold text-stone-500 uppercase tracking-widest">Active Business Date</span>
+                  <span className="text-xl font-black text-stone-900 font-mono tracking-tighter">
+                    {(() => {
+                      const [y, m, d] = todayBizDate.split('-');
+                      const dateObj = new Date(Number(y), Number(m) - 1, Number(d));
+                      const weekday = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'][dateObj.getDay()];
+                      return `${y}.${m}.${d} (${weekday})`;
+                    })()}
+                  </span>
+                </div>
+
+                <div className="md:col-span-2">
+                  {tickerItems.length > 0 && (
+                    <div 
+                      onClick={() => setActiveTab('inventory')}
+                      className="w-full overflow-hidden bg-white border border-stone-200 text-stone-600 rounded-xl flex items-center py-1.5 cursor-pointer hover:bg-stone-50 transition group relative shadow-sm"
+                      title="Click to manage inventory"
+                    >
+                      <div className="w-full overflow-hidden">
+                        <div className="whitespace-nowrap animate-ticker inline-block text-[11px] font-mono font-bold tracking-wider group-hover:[animation-play-state:paused]">
+                          {tickerItems.join('   ///   ')}
+                        </div>
+                      </div>
+                      {/* 両端のフェードグラデーション */}
+                      <div className="absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-white to-transparent pointer-events-none rounded-r-xl"></div>
+                      <div className="absolute left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-white to-transparent pointer-events-none rounded-l-xl"></div>
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1799,7 +1864,7 @@ const getHotelDisplayName = (order: Order) => {
           )}
 
           {/* =========================================
-              4. SETTINGS TAB (完全版)
+              4. SETTINGS TAB
               ========================================= */}
           {activeTab === 'settings' && (
             <div className="max-w-3xl mx-auto space-y-6 pb-28">
@@ -1869,7 +1934,7 @@ const getHotelDisplayName = (order: Order) => {
               </div>
             </div>
 
-              {/* 3. 料金 & VAT設定 (★ 店頭・デリバリー分離化) */}
+              {/* 3. 料金 & VAT設定 */}
               <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
                 <h3 className="text-xs font-bold text-stone-800 uppercase tracking-wider border-b border-stone-100 pb-2">3. Price & VAT Settings (Channel Independent)</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
@@ -1980,7 +2045,6 @@ const getHotelDisplayName = (order: Order) => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-stone-100">
-                      {/* ★ hotels を sortedHotels に変更 */}
                       {sortedHotels.filter(h => h.status !== 'pending').map((h) => (
                           <RegisteredHotelRow key={h.id} hotel={h} existingAreas={existingAreas} onUpdateDetails={handleUpdateHotelDetails} onUpdateStatus={handleUpdateHotelStatus} />
                         ))}
@@ -1990,7 +2054,7 @@ const getHotelDisplayName = (order: Order) => {
                 </div>
 
                 <div className="p-4 bg-stone-50 rounded-2xl border border-stone-200 space-y-3">
-                  <span className="text-xs font-bold text-stone-800 block">＋ Manually Add Hotel / ホテルを手学登録</span>
+                  <span className="text-xs font-bold text-stone-800 block">＋ Manually Add Hotel / ホテルを手動登録</span>
                   <form onSubmit={handleAddHotelManual} className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                     <div>
                       <label className="block text-[10px] font-bold text-stone-500 mb-1">Hotel Name (English) *</label>
@@ -2110,7 +2174,7 @@ const getHotelDisplayName = (order: Order) => {
             <div className="bg-white rounded-3xl border border-stone-200 shadow-2xl max-w-sm w-full p-6 text-center space-y-4">
               <div className="w-14 h-14 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center mx-auto text-2xl font-bold">✓</div>
               <div className="space-y-1">
-                <h3 className="text-base font-black text-stone-900">Settings Saved Successfully!</h3>
+                <h3 className="text-live font-black text-stone-900">Settings Saved Successfully!</h3>
                 <p className="text-xs text-stone-500">Your store settings have been updated.</p>
               </div>
               <button onClick={() => setShowSuccessModal(false)} className="w-full py-2.5 bg-stone-900 hover:bg-stone-800 text-white rounded-xl text-xs font-bold transition cursor-pointer">OK</button>

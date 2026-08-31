@@ -19,6 +19,7 @@ interface Material {
   current_cost: number;
   current_stock: number;
   cost_multiplier: number;
+  alert_threshold: number | null;
   is_archived: boolean;
 }
 
@@ -41,6 +42,17 @@ interface PurchaseItemInput {
   displayUnit: string;
 }
 
+interface OnlineOrder {
+  id: string;
+  material_id: string;
+  order_id: string;
+  vendor: string;
+  amount: number;
+  expected_date: string;
+  status: string;
+  created_at: string;
+}
+
 interface Recipe {
   id: string;
   name: string;
@@ -60,7 +72,6 @@ interface RecipeIngredientInput {
   amount: number | '';
 }
 
-// Sets用の型定義
 interface DailySet {
   id: string;
   name: string;
@@ -87,6 +98,7 @@ export default function InventoryPage() {
   const [activeSubTab, setActiveSubTab] = useState<InventoryTab>('materials');
   const [materials, setMaterials] = useState<Material[]>([]);
   const [purchases, setPurchases] = useState<MaterialPurchase[]>([]);
+  const [onlineOrders, setOnlineOrders] = useState<OnlineOrder[]>([]);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [recipeIngredients, setRecipeIngredients] = useState<RecipeIngredient[]>([]);
   const [dailySets, setDailySets] = useState<DailySet[]>([]);
@@ -99,6 +111,8 @@ export default function InventoryPage() {
   // モーダル状態
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isPurchaseModalOpen, setIsPurchaseModalOpen] = useState(false);
+  const [isOnlineOrderModalOpen, setIsOnlineOrderModalOpen] = useState(false);
+  const [isReceiveOrderModalOpen, setIsReceiveOrderModalOpen] = useState(false);
   const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
   const [isRecipeModalOpen, setIsRecipeModalOpen] = useState(false);
   const [isSetModalOpen, setIsSetModalOpen] = useState(false);
@@ -109,6 +123,7 @@ export default function InventoryPage() {
   const [newCategory, setNewCategory] = useState<MaterialCategory>('food');
   const [newBaseUnit, setNewBaseUnit] = useState<BaseUnit>('g');
   const [newCostMultiplier, setNewCostMultiplier] = useState<number>(100);
+  const [newAlertThreshold, setNewAlertThreshold] = useState<number | ''>('');
 
   // Purchase Form
   const [purchaseDate, setPurchaseDate] = useState(() => new Date().toISOString().split('T')[0]);
@@ -117,6 +132,21 @@ export default function InventoryPage() {
   const [isTaxIncluded, setIsTaxIncluded] = useState(false);
   const [shippingFee, setShippingFee] = useState<number | ''>('');
   const [purchaseItems, setPurchaseItems] = useState<PurchaseItemInput[]>([{ uid: Date.now().toString(), materialId: '', price: '', amount: '', displayUnit: 'g' }]);
+
+  // Online Order Form (In Transit)
+  const [ooMaterialId, setOoMaterialId] = useState('');
+  const [ooAmount, setOoAmount] = useState<number | ''>('');
+  const [ooDisplayUnit, setOoDisplayUnit] = useState('g');
+  const [ooOrderId, setOoOrderId] = useState('');
+  const [ooVendor, setOoVendor] = useState('');
+  const [ooExpectedDate, setOoExpectedDate] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate() + 2); return d.toISOString().split('T')[0];
+  });
+
+  // Receive Online Order Form
+  const [receiveTarget, setReceiveTarget] = useState<OnlineOrder | null>(null);
+  const [receivePrice, setReceivePrice] = useState<number | ''>('');
+  const [receiveTaxIncluded, setReceiveTaxIncluded] = useState(false);
 
   // Adjust Form
   const [adjustTarget, setAdjustTarget] = useState<Material | null>(null);
@@ -140,9 +170,10 @@ export default function InventoryPage() {
   // ==========================================
   const fetchData = async () => {
     setIsLoading(true);
-    const [matRes, purRes, recRes, recIngRes, setRes, setItemsRes] = await Promise.all([
+    const [matRes, purRes, ooRes, recRes, recIngRes, setRes, setItemsRes] = await Promise.all([
       supabase.from('materials').select('*').order('created_at', { ascending: false }),
       supabase.from('material_purchases').select('*').order('created_at', { ascending: false }),
+      supabase.from('online_orders').select('*').eq('status', 'pending').order('expected_date', { ascending: true }),
       supabase.from('recipes').select('*').order('created_at', { ascending: false }),
       supabase.from('recipe_ingredients').select('*'),
       supabase.from('daily_sets').select('*').order('created_at', { ascending: false }),
@@ -150,6 +181,7 @@ export default function InventoryPage() {
     ]);
     if (matRes.data) setMaterials(matRes.data);
     if (purRes.data) setPurchases(purRes.data);
+    if (ooRes.data) setOnlineOrders(ooRes.data);
     if (recRes.data) setRecipes(recRes.data);
     if (recIngRes.data) setRecipeIngredients(recIngRes.data);
     if (setRes.data) setDailySets(setRes.data);
@@ -160,9 +192,9 @@ export default function InventoryPage() {
   useEffect(() => { fetchData(); }, []);
 
   // ==========================================
-  // Master & Purchase & Adjust Logic
+  // Master Logic
   // ==========================================
-  const resetMasterForm = () => { setNewName(''); setNewCategory('food'); setNewBaseUnit('g'); setNewCostMultiplier(100); };
+  const resetMasterForm = () => { setNewName(''); setNewCategory('food'); setNewBaseUnit('g'); setNewCostMultiplier(100); setNewAlertThreshold(''); };
   const duplicateWarning = useMemo(() => {
     if (!newName.trim()) return null;
     const existing = materials.find(m => m.name.toLowerCase() === newName.trim().toLowerCase());
@@ -172,7 +204,12 @@ export default function InventoryPage() {
   const handleSaveMaterial = async () => {
     if (!newName.trim() || duplicateWarning) return;
     setIsSaving(true);
-    const newMaterial = { name: newName.trim(), category: newCategory, base_unit: newBaseUnit, current_cost: 0, current_stock: 0, cost_multiplier: newCostMultiplier, is_archived: false };
+    const newMaterial = { 
+      name: newName.trim(), category: newCategory, base_unit: newBaseUnit, 
+      current_cost: 0, current_stock: 0, cost_multiplier: newCostMultiplier, 
+      alert_threshold: newAlertThreshold === '' ? null : Number(newAlertThreshold),
+      is_archived: false 
+    };
     const { data, error } = await supabase.from('materials').insert([newMaterial]).select().single();
     setIsSaving(false);
     if (error) return alert('Failed to save material: ' + error.message);
@@ -181,10 +218,18 @@ export default function InventoryPage() {
 
   const handleUpdateMultiplier = async (id: string, newMult: number) => {
     setMaterials(materials.map(m => m.id === id ? { ...m, cost_multiplier: newMult } : m));
-    const { error } = await supabase.from('materials').update({ cost_multiplier: newMult }).eq('id', id);
-    if (error) { alert('Failed to update: ' + error.message); fetchData(); }
+    await supabase.from('materials').update({ cost_multiplier: newMult }).eq('id', id);
   };
 
+  const handleUpdateAlertThreshold = async (id: string, value: string) => {
+    const numValue = value === '' ? null : Number(value.replace(/[^0-9]/g, ''));
+    setMaterials(materials.map(m => m.id === id ? { ...m, alert_threshold: numValue } : m));
+    await supabase.from('materials').update({ alert_threshold: numValue }).eq('id', id);
+  };
+
+  // ==========================================
+  // Purchase & Online Order Logic
+  // ==========================================
   const resetPurchaseForm = () => {
     setPurchaseDate(new Date().toISOString().split('T')[0]); setReceiptNo(''); setReceiptVendor(''); setIsTaxIncluded(false); setShippingFee('');
     setPurchaseItems([{ uid: Date.now().toString(), materialId: '', price: '', amount: '', displayUnit: 'g' }]);
@@ -256,6 +301,59 @@ export default function InventoryPage() {
     setIsLoading(false);
   };
 
+  // ネット発注 (In Transit) 関連
+  const resetOnlineOrderForm = () => {
+    setOoMaterialId(''); setOoAmount(''); setOoOrderId(''); setOoVendor(''); setOoDisplayUnit('g');
+    const d = new Date(); d.setDate(d.getDate() + 2); setOoExpectedDate(d.toISOString().split('T')[0]);
+  };
+
+  const handleSaveOnlineOrder = async () => {
+    if (!ooMaterialId || ooAmount === '' || !ooOrderId.trim() || !ooVendor.trim()) return alert('Please fill in all required fields.');
+    setIsSaving(true);
+    const mat = materials.find(m => m.id === ooMaterialId);
+    let finalAmount = Number(ooAmount);
+    if (mat?.base_unit === 'g' && ooDisplayUnit === 'kg') finalAmount *= 1000;
+    if (mat?.base_unit === 'ml' && ooDisplayUnit === 'L') finalAmount *= 1000;
+
+    const { error } = await supabase.from('online_orders').insert([{
+      material_id: ooMaterialId, order_id: ooOrderId.trim(), vendor: ooVendor.trim(),
+      amount: finalAmount, expected_date: ooExpectedDate, status: 'pending'
+    }]);
+
+    setIsSaving(false);
+    if (error) return alert('Failed to save online order: ' + error.message);
+    await fetchData(); setIsOnlineOrderModalOpen(false); resetOnlineOrderForm();
+  };
+
+  const handleReceiveOnlineOrder = async () => {
+    if (!receiveTarget || receivePrice === '') return;
+    setIsSaving(true);
+    const mat = materials.find(m => m.id === receiveTarget.material_id);
+    if (!mat) return;
+
+    let finalPrice = Number(receivePrice);
+    if (!receiveTaxIncluded) finalPrice = mat.category === 'food' ? Math.round(finalPrice * 1.08) : Math.round(finalPrice * 1.10);
+    
+    const unitCost = finalPrice / receiveTarget.amount;
+    const today = new Date().toISOString().split('T')[0];
+    const receiptNote = `[#${receiveTarget.order_id}] ${receiveTarget.vendor} (Online)`;
+
+    try {
+      await supabase.from('material_purchases').insert([{ material_id: mat.id, purchase_date: today, price: finalPrice, amount: receiveTarget.amount, unit_cost: unitCost, receipt_note: receiptNote }]);
+      await supabase.from('materials').update({ current_stock: mat.current_stock + receiveTarget.amount, current_cost: unitCost }).eq('id', mat.id);
+      await supabase.from('online_orders').update({ status: 'received' }).eq('id', receiveTarget.id);
+      await fetchData(); setIsReceiveOrderModalOpen(false); setReceiveTarget(null); setReceivePrice(''); setReceiveTaxIncluded(false);
+    } catch (err: any) { alert('Error receiving order: ' + err.message); }
+    setIsSaving(false);
+  };
+
+  const handleCancelOnlineOrder = async (id: string) => {
+    if (!window.confirm('Cancel this pending online order?')) return;
+    await supabase.from('online_orders').delete().eq('id', id);
+    fetchData();
+  };
+
+  // Adjust Logic
   const openAdjustModal = (material: Material) => {
     setAdjustTarget(material); setAdjustType('waste'); setAdjustDate(new Date().toISOString().split('T')[0]); setAdjustAmount(''); setAdjustReason(''); setIsAdjustModalOpen(true);
   };
@@ -358,7 +456,6 @@ export default function InventoryPage() {
       const sanitized = value.replace(/[^0-9]/g, '');
       setSetInputItems(setInputItems.map(item => item.uid === uid ? { ...item, amount: sanitized === '' ? '' : Number(sanitized) } : item));
     } else {
-      // value comes in as "recipe_UUID" or "material_UUID"
       const [type, id] = value.split('_');
       setSetInputItems(setInputItems.map(item => item.uid === uid ? { ...item, itemType: type as 'recipe'|'material', itemId: id } : item));
     }
@@ -513,7 +610,7 @@ export default function InventoryPage() {
               <button onClick={() => setIsAddModalOpen(true)} className="w-full sm:w-auto bg-stone-900 hover:bg-stone-800 text-white px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer shadow-sm flex items-center justify-center gap-1.5 shrink-0">＋ Add Material</button>
             </div>
           </div>
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto pb-4">
             {isLoading ? <div className="py-12 text-center text-stone-400 font-bold text-sm">Loading materials...</div> : (
               <table className="w-full text-left text-xs text-stone-700 border-collapse">
                 <thead>
@@ -527,28 +624,53 @@ export default function InventoryPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-stone-100">
-                  {filteredMaterials.map((m) => (
-                    <tr key={m.id} className="hover:bg-stone-50 transition group">
-                      <td className="py-3 px-3 font-bold text-stone-900">{m.name}</td>
-                      <td className="py-3 px-3 capitalize font-semibold text-stone-600"><span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${m.category === 'food' ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-stone-100 text-stone-600 border border-stone-200'}`}>{m.category}</span></td>
-                      <td className="py-3 px-3 font-mono text-stone-500">{m.base_unit}</td>
-                      <td className="py-3 px-3 text-right font-mono font-bold text-stone-900">{m.current_stock || 0}</td>
-                      <td className="py-3 px-3 text-right font-mono font-bold text-stone-900">
-                        <div className="flex items-center justify-end gap-1">
-                          {m.current_cost === 0 ? <span className="text-stone-400 font-normal">¥0.00</span> : <span>¥{(m.current_cost * (m.cost_multiplier || 1)).toFixed(2)}</span>}
-                          <select value={m.cost_multiplier || 1} onChange={(e) => handleUpdateMultiplier(m.id, Number(e.target.value))} className="text-[10px] text-stone-400 bg-transparent hover:bg-stone-200 hover:text-stone-700 rounded cursor-pointer outline-none transition-colors py-0.5 px-1 font-mono">
-                            {m.base_unit === 'g' && <><option value={1}>/ 1g</option><option value={100}>/ 100g</option><option value={1000}>/ 1kg</option></>}
-                            {m.base_unit === 'ml' && <><option value={1}>/ 1ml</option><option value={100}>/ 100ml</option><option value={1000}>/ 1L</option></>}
-                            {m.base_unit === 'pcs' && <><option value={1}>/ 1pcs</option><option value={10}>/ 10pcs</option><option value={100}>/ 100pcs</option></>}
-                            {m.base_unit === 'cm' && <><option value={1}>/ 1cm</option><option value={10}>/ 10cm</option><option value={100}>/ 1m</option></>}
-                          </select>
-                        </div>
-                      </td>
-                      <td className="py-3 px-3 text-center">
-                        <button onClick={() => openAdjustModal(m)} className="text-[10px] font-bold text-stone-400 hover:text-emerald-600 transition cursor-pointer bg-white border border-stone-200 hover:border-emerald-300 px-2 py-1 rounded shadow-xs">⚖️ Adjust</button>
-                      </td>
-                    </tr>
-                  ))}
+                  {filteredMaterials.map((m) => {
+                    const pendingOrders = onlineOrders.filter(oo => oo.material_id === m.id);
+                    const pendingAmount = pendingOrders.reduce((sum, oo) => sum + oo.amount, 0);
+                    const isLowStock = m.alert_threshold !== null && m.current_stock < m.alert_threshold;
+
+                    return (
+                      <tr key={m.id} className="hover:bg-stone-50 transition group">
+                        <td className="py-3 px-3 font-bold text-stone-900">{m.name}</td>
+                        <td className="py-3 px-3 capitalize font-semibold text-stone-600"><span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${m.category === 'food' ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-stone-100 text-stone-600 border border-stone-200'}`}>{m.category}</span></td>
+                        <td className="py-3 px-3 font-mono text-stone-500">{m.base_unit}</td>
+                        <td className="py-3 px-3 text-right font-mono font-bold text-stone-900">
+                          <div className="flex flex-col items-end">
+                            <div className="flex items-center gap-1.5">
+                              {isLowStock && <span className="text-[9px] bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded font-extrabold flex items-center gap-0.5 shadow-xs">⚠️ LOW</span>}
+                              <span className={isLowStock ? 'text-rose-600 text-sm' : 'text-sm'}>{m.current_stock || 0}</span>
+                            </div>
+                            {pendingAmount > 0 && <span className="text-[9px] text-stone-400 font-bold tracking-wide mt-0.5">(+ {pendingAmount} Ordered)</span>}
+                            <div className="flex items-center gap-1 mt-1 text-[9px] text-stone-400">
+                              <span>Alert:</span>
+                              <input 
+                                type="number" 
+                                placeholder="-" 
+                                value={m.alert_threshold ?? ''} 
+                                onChange={(e) => handleUpdateAlertThreshold(m.id, e.target.value)} 
+                                className="w-10 bg-transparent border-b border-dashed border-stone-300 outline-none text-right hover:border-stone-600 focus:border-emerald-500 transition-colors" 
+                                title="Click to edit alert threshold directly"
+                              />
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono font-bold text-stone-900 align-top pt-4">
+                          <div className="flex items-center justify-end gap-1">
+                            {m.current_cost === 0 ? <span className="text-stone-400 font-normal">¥0.00</span> : <span>¥{(m.current_cost * (m.cost_multiplier || 1)).toFixed(2)}</span>}
+                            <select value={m.cost_multiplier || 1} onChange={(e) => handleUpdateMultiplier(m.id, Number(e.target.value))} className="text-[10px] text-stone-400 bg-transparent hover:bg-stone-200 hover:text-stone-700 rounded cursor-pointer outline-none transition-colors py-0.5 px-1 font-mono">
+                              {m.base_unit === 'g' && <><option value={1}>/ 1g</option><option value={100}>/ 100g</option><option value={1000}>/ 1kg</option></>}
+                              {m.base_unit === 'ml' && <><option value={1}>/ 1ml</option><option value={100}>/ 100ml</option><option value={1000}>/ 1L</option></>}
+                              {m.base_unit === 'pcs' && <><option value={1}>/ 1pcs</option><option value={10}>/ 10pcs</option><option value={100}>/ 100pcs</option></>}
+                              {m.base_unit === 'cm' && <><option value={1}>/ 1cm</option><option value={10}>/ 10cm</option><option value={100}>/ 1m</option></>}
+                            </select>
+                          </div>
+                        </td>
+                        <td className="py-3 px-3 text-center align-top pt-3.5">
+                          <button onClick={() => openAdjustModal(m)} className="text-[10px] font-bold text-stone-400 hover:text-emerald-600 transition cursor-pointer bg-white border border-stone-200 hover:border-emerald-300 px-2 py-1 rounded shadow-xs">⚖️ Adjust</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             )}
@@ -692,213 +814,104 @@ export default function InventoryPage() {
 
       {/* Purchases Tab */}
       {activeSubTab === 'purchases' && (
-        <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-5 relative">
-          <div className="flex justify-between items-center pb-3 border-b border-stone-100">
-            <div><h2 className="text-sm font-bold text-stone-900">Purchase History</h2></div>
-            <button onClick={() => setIsPurchaseModalOpen(true)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer shadow-sm flex items-center gap-1.5">＋ Add Purchase</button>
+        <div className="space-y-6">
+          {/* In Transit Section */}
+          <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
+            <div className="flex justify-between items-center pb-3 border-b border-stone-100">
+              <div>
+                <h2 className="text-sm font-bold text-stone-900 flex items-center gap-2">
+                  In Transit (Pending Online Orders)
+                  {onlineOrders.length > 0 && <span className="bg-purple-100 text-purple-800 text-[10px] px-2 py-0.5 rounded-full font-bold">{onlineOrders.length}</span>}
+                </h2>
+                <p className="text-[10px] text-stone-400 font-bold mt-0.5">Manage expected deliveries before they hit physical stock.</p>
+              </div>
+              <button onClick={() => setIsOnlineOrderModalOpen(true)} className="bg-stone-900 hover:bg-stone-800 text-white px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer shadow-sm flex items-center gap-1.5">
+                ＋ Add Online Order
+              </button>
+            </div>
+            
+            {onlineOrders.length === 0 ? (
+              <div className="py-6 text-center text-stone-400 text-xs font-bold">No pending orders.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-stone-700 border-collapse">
+                  <thead>
+                    <tr className="border-b border-stone-200 text-stone-400 uppercase text-[10px]">
+                      <th className="py-2 px-3">Expected Date</th>
+                      <th className="py-2 px-3">Item Name</th>
+                      <th className="py-2 px-3">Order Info</th>
+                      <th className="py-2 px-3 text-right">Amount</th>
+                      <th className="py-2 px-3 text-center">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-100">
+                    {onlineOrders.map(oo => {
+                      const mat = materials.find(m => m.id === oo.material_id);
+                      return (
+                        <tr key={oo.id} className="hover:bg-stone-50 transition">
+                          <td className="py-2.5 px-3 font-mono font-bold text-stone-600">{oo.expected_date}</td>
+                          <td className="py-2.5 px-3 font-bold text-stone-900">{mat?.name || 'Unknown'}</td>
+                          <td className="py-2.5 px-3">
+                            <div className="font-semibold text-stone-800">{oo.vendor}</div>
+                            <div className="text-[10px] text-stone-400 font-mono">#{oo.order_id}</div>
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono font-bold">{oo.amount} <span className="text-[10px] font-normal text-stone-500">{mat?.base_unit}</span></td>
+                          <td className="py-2.5 px-3 text-center">
+                            <div className="flex items-center justify-center gap-2">
+                              <button onClick={() => { setReceiveTarget(oo); setIsReceiveOrderModalOpen(true); }} className="text-[10px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-1 rounded transition cursor-pointer">
+                                ✓ Mark as Received
+                              </button>
+                              <button onClick={() => handleCancelOnlineOrder(oo.id)} className="text-stone-300 hover:text-rose-500 transition cursor-pointer p-1" title="Cancel Order">✕</button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-          {isLoading ? <div className="py-12 text-center text-stone-400 font-bold text-sm">Loading...</div> : (
-            <div className="space-y-4">
-              {groupedPurchases.map((group, idx) => (
-                <div key={idx} className="border border-stone-200 rounded-xl overflow-hidden shadow-xs group">
-                  <div className="bg-stone-50 px-4 py-3 flex justify-between items-center border-b border-stone-200">
-                    <div className="flex items-center gap-3">
-                      <span className="bg-white px-2 py-1 rounded text-[10px] font-mono font-bold text-stone-600 border border-stone-200">{group.date}</span>
-                      <span className="text-xs font-bold text-stone-800">{group.note}</span>
+
+          {/* Actual Purchase History Section */}
+          <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
+            <div className="flex justify-between items-center pb-3 border-b border-stone-100">
+              <div><h2 className="text-sm font-bold text-stone-900">Purchase History (Received Stock)</h2></div>
+              <button onClick={() => setIsPurchaseModalOpen(true)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer shadow-sm flex items-center gap-1.5">
+                ＋ Add Direct Purchase
+              </button>
+            </div>
+            {isLoading ? <div className="py-12 text-center text-stone-400 font-bold text-sm">Loading...</div> : (
+              <div className="space-y-4">
+                {groupedPurchases.map((group, idx) => (
+                  <div key={idx} className="border border-stone-200 rounded-xl overflow-hidden shadow-xs group">
+                    <div className="bg-stone-50 px-4 py-3 flex justify-between items-center border-b border-stone-200">
+                      <div className="flex items-center gap-3">
+                        <span className="bg-white px-2 py-1 rounded text-[10px] font-mono font-bold text-stone-600 border border-stone-200">{group.date}</span>
+                        <span className="text-xs font-bold text-stone-800">{group.note}</span>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <span className="text-sm font-black text-stone-900 font-mono">Total: ¥{group.total.toLocaleString()}</span>
+                        <button onClick={() => handleCancelReceipt(group.date, group.note)} className="text-[10px] font-bold text-stone-400 hover:text-rose-600 transition opacity-0 group-hover:opacity-100 cursor-pointer">🗑️ Cancel</button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-4">
-                      <span className="text-sm font-black text-stone-900 font-mono">Total: ¥{group.total.toLocaleString()}</span>
-                      <button onClick={() => handleCancelReceipt(group.date, group.note)} className="text-[10px] font-bold text-stone-400 hover:text-rose-600 transition opacity-0 group-hover:opacity-100 cursor-pointer">🗑️ Cancel</button>
+                    <div className="bg-white p-4">
+                      <table className="w-full text-left text-xs text-stone-600">
+                        <tbody>
+                          {group.items.map(item => (
+                            <tr key={item.id} className="border-b border-stone-100 last:border-0">
+                              <td className="py-2 font-bold text-stone-800 w-1/2">{item.materialName}</td>
+                              <td className="py-2 font-mono text-right">{item.amount} {item.unit}</td>
+                              <td className="py-2 font-mono text-right w-24">¥{item.price.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
-                  <div className="bg-white p-4">
-                    <table className="w-full text-left text-xs text-stone-600">
-                      <tbody>
-                        {group.items.map(item => (
-                          <tr key={item.id} className="border-b border-stone-100 last:border-0">
-                            <td className="py-2 font-bold text-stone-800 w-1/2">{item.materialName}</td>
-                            <td className="py-2 font-mono text-right">{item.amount} {item.unit}</td>
-                            <td className="py-2 font-mono text-right w-24">¥{item.price.toLocaleString()}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* =========================================
-          MODAL: Recipe (Add/Edit)
-          ========================================= */}
-      {isRecipeModalOpen && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl border border-stone-200 shadow-2xl max-w-lg w-full p-6 space-y-5 flex flex-col max-h-[90vh]">
-            <div className="flex justify-between items-start border-b border-stone-100 pb-3 shrink-0">
-              <div>
-                <h3 className="text-lg font-bold text-stone-900">{editingRecipeId ? 'Edit Recipe' : 'New Recipe'}</h3>
-                <p className="text-[10px] font-bold uppercase text-stone-400 mt-0.5">Build your BOM (Bill of Materials)</p>
+                ))}
               </div>
-              <button onClick={() => { setIsRecipeModalOpen(false); resetRecipeForm(); }} className="text-stone-400 hover:text-stone-700 text-lg font-bold cursor-pointer">✕</button>
-            </div>
-
-            <div className="overflow-y-auto pr-2 space-y-5 flex-1 custom-scrollbar">
-              <div>
-                <label className="block text-[11px] font-bold text-stone-600 mb-1.5">Recipe Name</label>
-                <input type="text" autoFocus placeholder="e.g., Salted Salmon Onigiri" value={recipeName} onChange={(e) => setRecipeName(e.target.value)} className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-sm font-bold text-stone-900 outline-none focus:border-stone-900" />
-              </div>
-
-              <div className="space-y-3">
-                <label className="block text-[11px] font-bold text-stone-600">Ingredients (構成要素)</label>
-                {recipeInputItems.map((item) => {
-                  const mat = materials.find(m => m.id === item.materialId);
-                  const lineCost = mat && item.amount !== '' ? mat.current_cost * Number(item.amount) : 0;
-                  
-                  return (
-                    <div key={item.uid} className="flex items-center gap-2 bg-white p-2 rounded-xl border border-stone-200 shadow-xs relative">
-                      <div className="flex-1">
-                        <select value={item.materialId} onChange={(e) => handleUpdateRecipeInput(item.uid, 'materialId', e.target.value)} className="w-full px-2 py-2 bg-stone-50 border border-stone-300 rounded-lg text-xs font-bold text-stone-800 outline-none cursor-pointer">
-                          <option value="">-- Select Material --</option>
-                          {materials.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                        </select>
-                      </div>
-                      <div className="w-24 relative">
-                        <input type="text" placeholder="Amount" inputMode="numeric" value={item.amount} onChange={(e) => handleUpdateRecipeInput(item.uid, 'amount', e.target.value)} className="w-full px-2 py-2 bg-stone-50 border border-stone-300 rounded-lg text-xs font-mono font-bold outline-none text-right pr-6" />
-                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-bold text-stone-400">{mat ? mat.base_unit : ''}</span>
-                      </div>
-                      <div className="w-16 text-right pr-2">
-                        <span className="text-[10px] font-mono font-bold text-stone-500">¥{lineCost.toFixed(2)}</span>
-                      </div>
-                      <button onClick={() => handleRemoveRecipeRow(item.uid)} disabled={recipeInputItems.length === 1} className="text-stone-300 hover:text-rose-500 disabled:opacity-30 cursor-pointer p-1">✕</button>
-                    </div>
-                  );
-                })}
-                <button onClick={handleAddRecipeRow} className="w-full py-2 border-2 border-dashed border-stone-200 hover:border-stone-400 text-stone-400 hover:text-stone-700 rounded-xl text-xs font-bold transition cursor-pointer">＋ Add Ingredient</button>
-              </div>
-            </div>
-
-            <div className="bg-stone-900 rounded-xl p-4 shrink-0 flex items-center justify-between shadow-md">
-              <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">Total Recipe Cost</span>
-              <span className="text-2xl font-black text-white font-mono leading-none">¥{currentRecipeTotalCost.toFixed(2)}</span>
-            </div>
-            <div className="flex gap-2 pt-2 border-t border-stone-100 shrink-0">
-              <button onClick={() => { setIsRecipeModalOpen(false); resetRecipeForm(); }} className="flex-1 py-3 bg-white border border-stone-200 hover:bg-stone-50 text-stone-600 rounded-xl text-xs font-bold cursor-pointer">Cancel</button>
-              <button onClick={handleSaveRecipe} disabled={isSaving || !recipeName.trim()} className="flex-1 py-3 bg-stone-900 hover:bg-stone-800 text-white rounded-xl text-xs font-bold shadow-sm cursor-pointer disabled:opacity-50">Save Recipe</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* =========================================
-          MODAL: Daily Set (Add/Edit)
-          ========================================= */}
-      {isSetModalOpen && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl border border-stone-200 shadow-2xl max-w-lg w-full p-6 space-y-5 flex flex-col max-h-[90vh]">
-            <div className="flex justify-between items-start border-b border-stone-100 pb-3 shrink-0">
-              <div>
-                <h3 className="text-lg font-bold text-stone-900">{editingSetId ? 'Edit Daily Set' : 'New Daily Set'}</h3>
-                <p className="text-[10px] font-bold uppercase text-stone-400 mt-0.5">Combine recipes and materials</p>
-              </div>
-              <button onClick={() => { setIsSetModalOpen(false); resetSetForm(); }} className="text-stone-400 hover:text-stone-700 text-lg font-bold cursor-pointer">✕</button>
-            </div>
-
-            <div className="overflow-y-auto pr-2 space-y-5 flex-1 custom-scrollbar">
-              <div>
-                <label className="block text-[11px] font-bold text-stone-600 mb-1.5">Set Name</label>
-                <input 
-                  type="text" 
-                  autoFocus
-                  placeholder="e.g., Standard Set (2 Onigiri + Packaging)" 
-                  value={setName} 
-                  onChange={(e) => setSetName(e.target.value)} 
-                  className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-sm font-bold text-stone-900 outline-none focus:border-stone-900" 
-                />
-              </div>
-
-              <div className="space-y-3">
-                <label className="block text-[11px] font-bold text-stone-600">Contents (セット内容)</label>
-                {setInputItems.map((item) => {
-                  
-                  let unitLabel = '';
-                  let lineCost = 0;
-
-                  if (item.itemType === 'recipe' && item.itemId) {
-                    unitLabel = 'portion';
-                    lineCost = item.amount !== '' ? getRecipeTotalCost(item.itemId) * Number(item.amount) : 0;
-                  } else if (item.itemType === 'material' && item.itemId) {
-                    const mat = materials.find(m => m.id === item.itemId);
-                    unitLabel = mat ? mat.base_unit : '';
-                    lineCost = mat && item.amount !== '' ? mat.current_cost * Number(item.amount) : 0;
-                  }
-                  
-                  return (
-                    <div key={item.uid} className="flex items-center gap-2 bg-white p-2 rounded-xl border border-stone-200 shadow-xs relative">
-                      <div className="flex-1">
-                        <select 
-                          value={item.itemId ? `${item.itemType}_${item.itemId}` : ''} 
-                          onChange={(e) => handleUpdateSetInput(item.uid, 'itemId', e.target.value)} 
-                          className="w-full px-2 py-2 bg-stone-50 border border-stone-300 rounded-lg text-xs font-bold text-stone-800 outline-none cursor-pointer"
-                        >
-                          <option value="">-- Select Item --</option>
-                          <optgroup label="Recipes (単品レシピ)">
-                            {recipes.map(r => <option key={`recipe_${r.id}`} value={`recipe_${r.id}`}>{r.name}</option>)}
-                          </optgroup>
-                          <optgroup label="Materials (包材・その他マスター)">
-                            {materials.map(m => <option key={`material_${m.id}`} value={`material_${m.id}`}>{m.name}</option>)}
-                          </optgroup>
-                        </select>
-                      </div>
-                      
-                      <div className="w-24 relative">
-                        <input 
-                          type="text" 
-                          placeholder="Amount" 
-                          inputMode="numeric" 
-                          value={item.amount} 
-                          onChange={(e) => handleUpdateSetInput(item.uid, 'amount', e.target.value)} 
-                          className="w-full px-2 py-2 bg-stone-50 border border-stone-300 rounded-lg text-xs font-mono font-bold outline-none text-right pr-6" 
-                        />
-                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-bold text-stone-400">
-                          {unitLabel}
-                        </span>
-                      </div>
-
-                      <div className="w-16 text-right pr-2">
-                        <span className="text-[10px] font-mono font-bold text-stone-500">¥{lineCost.toFixed(2)}</span>
-                      </div>
-
-                      <button 
-                        onClick={() => handleRemoveSetRow(item.uid)} 
-                        disabled={setInputItems.length === 1} 
-                        className="text-stone-300 hover:text-rose-500 disabled:opacity-30 cursor-pointer p-1"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  );
-                })}
-                <button 
-                  onClick={handleAddSetRow} 
-                  className="w-full py-2 border-2 border-dashed border-stone-200 hover:border-stone-400 text-stone-400 hover:text-stone-700 rounded-xl text-xs font-bold transition cursor-pointer"
-                >
-                  ＋ Add Item to Set
-                </button>
-              </div>
-            </div>
-
-            <div className="bg-stone-900 rounded-xl p-4 shrink-0 flex items-center justify-between shadow-md">
-              <span className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">Total Set Cost</span>
-              <span className="text-2xl font-black text-white font-mono leading-none">¥{currentSetTotalCost.toFixed(2)}</span>
-            </div>
-
-            <div className="flex gap-2 pt-2 border-t border-stone-100 shrink-0">
-              <button onClick={() => { setIsSetModalOpen(false); resetSetForm(); }} className="flex-1 py-3 bg-white border border-stone-200 hover:bg-stone-50 text-stone-600 rounded-xl text-xs font-bold cursor-pointer">Cancel</button>
-              <button onClick={handleSaveSet} disabled={isSaving || !setName.trim()} className="flex-1 py-3 bg-stone-900 hover:bg-stone-800 text-white rounded-xl text-xs font-bold shadow-sm cursor-pointer disabled:opacity-50">Save Set</button>
-            </div>
+            )}
           </div>
         </div>
       )}
@@ -937,6 +950,10 @@ export default function InventoryPage() {
                   </select>
                 </div>
               </div>
+              <div>
+                <label className="block text-[11px] font-bold text-stone-600 mb-1.5">Low Stock Alert Threshold (Optional)</label>
+                <input type="number" placeholder="Leave blank if not needed" value={newAlertThreshold} onChange={(e) => setNewAlertThreshold(e.target.value === '' ? '' : Number(e.target.value))} className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-sm font-mono font-bold outline-none" />
+              </div>
               {duplicateWarning && <div className="text-[10px] text-rose-600 font-bold bg-rose-50 p-2 rounded-lg">{duplicateWarning}</div>}
             </div>
             <div className="flex gap-2 pt-2 border-t border-stone-100">
@@ -948,15 +965,117 @@ export default function InventoryPage() {
       )}
 
       {/* =========================================
-          MODAL: Add Purchase (Receipt Entry)
+          MODAL: Add Online Order (In Transit)
+          ========================================= */}
+      {isOnlineOrderModalOpen && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-stone-200 shadow-2xl max-w-sm w-full p-6 space-y-5">
+            <div className="flex justify-between items-start border-b border-stone-100 pb-3">
+              <div>
+                <h3 className="text-lg font-bold text-stone-900">Add Online Order</h3>
+                <p className="text-[10px] font-bold text-stone-400 mt-0.5 uppercase tracking-wide">Track incoming items</p>
+              </div>
+              <button onClick={() => { setIsOnlineOrderModalOpen(false); resetOnlineOrderForm(); }} className="text-stone-400 hover:text-stone-700 text-lg font-bold cursor-pointer">✕</button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-bold text-stone-600 mb-1.5">Target Material</label>
+                <select value={ooMaterialId} onChange={(e) => {
+                  setOoMaterialId(e.target.value);
+                  const m = materials.find(mat => mat.id === e.target.value);
+                  if(m) setOoDisplayUnit(m.base_unit);
+                }} className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-sm font-bold outline-none cursor-pointer">
+                  <option value="">-- Select Material --</option>
+                  {materials.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                </select>
+              </div>
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1.5">Amount Ordered</label>
+                  <input type="number" placeholder="0" value={ooAmount} onChange={(e) => setOoAmount(e.target.value === '' ? '' : Number(e.target.value))} className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-sm font-mono font-bold outline-none" />
+                </div>
+                <div className="w-20">
+                  <label className="block text-[11px] font-bold text-stone-600 mb-1.5">Unit</label>
+                  <select value={ooDisplayUnit} onChange={(e) => setOoDisplayUnit(e.target.value)} className="w-full px-2 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-bold outline-none cursor-pointer">
+                    <option value="g">g</option><option value="kg">kg</option>
+                    <option value="ml">ml</option><option value="L">L</option>
+                    <option value="pcs">pcs</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-stone-600 mb-1.5">Vendor / Store</label>
+                <input type="text" placeholder="e.g. Amazon, 楽天" value={ooVendor} onChange={(e) => setOoVendor(e.target.value)} className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-sm font-bold outline-none" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-stone-600 mb-1.5">Order ID</label>
+                <input type="text" placeholder="#123-456789" value={ooOrderId} onChange={(e) => setOoOrderId(e.target.value)} className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-sm font-mono font-bold outline-none" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-stone-600 mb-1.5">Expected Arrival Date</label>
+                <input type="date" value={ooExpectedDate} onChange={(e) => setOoExpectedDate(e.target.value)} className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-xl text-sm font-bold outline-none" />
+              </div>
+            </div>
+            <div className="flex gap-2 pt-2 border-t border-stone-100">
+              <button onClick={() => { setIsOnlineOrderModalOpen(false); resetOnlineOrderForm(); }} className="flex-1 py-3 bg-white border border-stone-200 hover:bg-stone-50 text-stone-600 rounded-xl text-xs font-bold cursor-pointer">Cancel</button>
+              <button onClick={handleSaveOnlineOrder} disabled={isSaving || !ooMaterialId || ooAmount === '' || !ooOrderId || !ooVendor} className="flex-1 py-3 bg-stone-900 hover:bg-stone-800 text-white rounded-xl text-xs font-bold shadow-sm cursor-pointer disabled:opacity-50">Save Pending Order</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================
+          MODAL: Receive Online Order
+          ========================================= */}
+      {isReceiveOrderModalOpen && receiveTarget && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-stone-200 shadow-2xl max-w-sm w-full p-6 space-y-5">
+            <div className="flex justify-between items-start border-b border-stone-100 pb-3">
+              <div>
+                <h3 className="text-lg font-bold text-stone-900">Mark as Received</h3>
+                <p className="text-[10px] font-bold text-stone-400 mt-0.5">Finalize cost for {materials.find(m => m.id === receiveTarget.material_id)?.name}</p>
+              </div>
+              <button onClick={() => { setIsReceiveOrderModalOpen(false); setReceiveTarget(null); setReceivePrice(''); }} className="text-stone-400 hover:text-stone-700 text-lg font-bold cursor-pointer">✕</button>
+            </div>
+            <div className="space-y-4">
+              <div className="bg-stone-50 p-3 rounded-xl border border-stone-200 text-xs text-stone-600 space-y-1">
+                <div className="flex justify-between"><span className="font-bold">Amount:</span> <span className="font-mono">{receiveTarget.amount} {materials.find(m => m.id === receiveTarget.material_id)?.base_unit}</span></div>
+                <div className="flex justify-between"><span className="font-bold">Vendor:</span> <span>{receiveTarget.vendor}</span></div>
+                <div className="flex justify-between"><span className="font-bold">Order ID:</span> <span className="font-mono">#{receiveTarget.order_id}</span></div>
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-stone-600 mb-1.5">Final Receipt Price (確定支払額)</label>
+                <div className="relative">
+                  <input type="number" placeholder="Total Cost" value={receivePrice} onChange={(e) => setReceivePrice(e.target.value === '' ? '' : Number(e.target.value))} className="w-full pl-8 pr-3 py-2 bg-white border border-stone-300 rounded-xl text-lg font-mono font-bold outline-none focus:border-stone-900" />
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-stone-400 font-bold">¥</span>
+                </div>
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-stone-600 mb-1">Input Price Type</label>
+                <select value={receiveTaxIncluded ? 'included' : 'excluded'} onChange={(e) => setReceiveTaxIncluded(e.target.value === 'included')} className="w-full px-2 py-2 bg-stone-50 border border-stone-300 rounded-xl text-xs font-bold outline-none cursor-pointer">
+                  <option value="excluded">Tax Excluded (税抜入力)</option>
+                  <option value="included">Tax Included (税込入力)</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex gap-2 pt-2 border-t border-stone-100">
+              <button onClick={() => { setIsReceiveOrderModalOpen(false); setReceiveTarget(null); setReceivePrice(''); }} className="flex-1 py-3 bg-white border border-stone-200 hover:bg-stone-50 text-stone-600 rounded-xl text-xs font-bold cursor-pointer">Cancel</button>
+              <button onClick={handleReceiveOnlineOrder} disabled={isSaving || receivePrice === ''} className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm cursor-pointer disabled:opacity-50">Confirm Receipt</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================
+          MODAL: Add Direct Purchase
           ========================================= */}
       {isPurchaseModalOpen && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl border border-stone-200 shadow-2xl max-w-2xl w-full p-6 space-y-5 flex flex-col max-h-[90vh]">
             <div className="flex justify-between items-start border-b border-stone-100 pb-3 shrink-0">
               <div>
-                <h3 className="text-lg font-bold text-stone-900">Add Purchase (Receipt Entry)</h3>
-                <p className="text-[10px] font-bold text-stone-400 mt-0.5 uppercase tracking-wide">Enter items to update stock & avg cost</p>
+                <h3 className="text-lg font-bold text-stone-900">Add Direct Purchase (Receipt Entry)</h3>
+                <p className="text-[10px] font-bold text-stone-400 mt-0.5 uppercase tracking-wide">Enter items bought directly (e.g., Supermarket)</p>
               </div>
               <button onClick={() => { setIsPurchaseModalOpen(false); resetPurchaseForm(); }} className="text-stone-400 hover:text-stone-700 text-lg font-bold cursor-pointer">✕</button>
             </div>
